@@ -1,0 +1,2245 @@
+-- ======================================================================
+-- 🐱 CAT HUB (KAITUN) - ULTIMATE MASTER V21
+-- 1. HỆ THỐNG NÉ CHIÊU ĐỎ CHUẨN XÁC NHƯ VIDEO REAPERX HUB:
+--    - Nhận diện chính xác 100% các vùng cảnh báo đỏ của Boss & Quái (precast, indicator, aoe, spikes, beams...).
+--    - Tính toán toạ độ không gian 3D (Object Space): Khi người chơi đứng trong vùng đỏ,
+--      tự động TÌM ĐƯỜNG NGẮN NHẤT BƯỚC RA KHỎI VÙNG ĐỎ để đứng vào khe an toàn (Safe Spot)!
+--    - Khi đã ra ngoài vùng đỏ an toàn -> Lập tức dừng né, khoá mặt vào Boss và tiếp tục chém/spam skill!
+-- 2. DI CHUYỂN & TẤN CÔNG THỰC CHIẾN:
+--    - Quái thường: Chạy tới sát quái (<= 7m) rồi MỚI chém kiếm và sài skill Q, E.
+--    - Boss (kể cả Boss ngoài vực): Chạy tới gần Boss / Mép sàn, sau đó LIÊN TỤC SPAM AUTO SKILL Q, E & CHÉM KIẾM.
+-- 3. HỆ THỐNG NÂNG STATS TỰ CHIA (PHYSICAL / STAMINA / SPELL):
+--    - Chọn cả 3: Tự chia 1:1:1 | Chọn 2: Tự chia 1:1 | Chọn 1: Nâng 100%.
+-- 4. HỆ THỐNG LƯU CONFIG BỀN VỮNG (PERSISTENT SAVE CONFIG):
+--    - Không cài sẵn Webhook. Tự dán Webhook và Discord ID của bạn rồi bấm "LƯU CONFIG".
+--    - Tự động lưu vào máy (cathub_config.json) và khôi phục khi vào lại game.
+-- 5. WEBHOOK GỘP 1 TIN: Che tên Spoiler ||user|| + Tag Discord ID khi ra Legendary.
+-- ======================================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local PathfindingService = game:GetService("PathfindingService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 15)
+local Remotes = ReplicatedStorage:FindFirstChild("remotes") or ReplicatedStorage:WaitForChild("remotes", 5)
+
+-- Dọn dẹp bản script cũ
+if getgenv and getgenv()._CatHubMasterV21 then
+    pcall(function() getgenv()._CatHubMasterV21:Destroy() end)
+end
+if _G._CatHubConnsV21 then
+    for _, c in pairs(_G._CatHubConnsV21) do pcall(function() c:Disconnect() end) end
+end
+_G._CatHubConnsV21 = {}
+
+-- Anti AFK
+LocalPlayer.Idled:Connect(function()
+    pcall(function()
+        game:GetService("VirtualUser"):CaptureController()
+        game:GetService("VirtualUser"):ClickButton2(Vector2.new(0, 0))
+    end)
+end)
+
+-- Tải ảnh Mascot Mèo Cute
+local CatLogoAsset = "rbxassetid://16752790"
+pcall(function()
+    if writefile and (getcustomasset or getsynasset) then
+        local getter = getcustomasset or getsynasset
+        local imgData = game:HttpGet("https://cellphones.com.vn/sforum/wp-content/uploads/2024/02/avatar-anh-meo-cute-31.jpg")
+        writefile("cathub_mascot.png", imgData)
+        CatLogoAsset = getter("cathub_mascot.png")
+    end
+end)
+
+-- ==================== CẤU HÌNH TOÀN BỘ HỆ THỐNG ==================== --
+local Config = {
+    MasterKaitun = false,
+    AutoFarm = false,              -- Mặc định TẮT
+    MobESP = false,                -- Mặc định TẮT
+    AutoSkills = false,            -- Mặc định TẮT
+    AutoStart = false,             -- Mặc định TẮT
+    AutoReplay = false,            -- Mặc định TẮT
+    AutoDodgeRed = true,           -- Tự động né chiêu đỏ (Mặc định BẬT)
+    -- Hệ thống nâng Stats
+    AutoPhysical = false,
+    AutoStamina = false,
+    AutoSpell = false,
+    -- Cài đặt chiến đấu
+    CombatDistance = 7.0,
+    BossDistance = 45.0,
+    CurrentBuild = "Physical",
+    AutoDailyReward = true,
+    -- Map & Mode
+    SelectedMap = "Desert Temple",
+    SelectedDifficulty = "Easy",
+    SelectedLevelReq = 1,
+    IsHardcore = false,
+    IsPrivateLobby = true,
+    -- Bán đồ
+    AutoSellCommon = false,
+    AutoSellUncommon = false,
+    AutoSellRare = false,
+    AutoSellEpic = false,
+    AutoSellLegendary = false,
+    -- Discord Webhook (ĐÃ XOÁ HOÀN TOÀN MẶC ĐỊNH THEO YÊU CẦU)
+    DiscordUserId = "",
+    WebhookUrl = "",
+    WebhookAvatar = "https://cellphones.com.vn/sforum/wp-content/uploads/2024/02/avatar-anh-meo-cute-31.jpg"
+}
+
+-- Đọc cấu hình đã lưu từ máy nếu có (cathub_config.json)
+pcall(function()
+    if isfile and isfile("cathub_config.json") and readfile then
+        local content = readfile("cathub_config.json")
+        local saved = HttpService:JSONDecode(content)
+        if type(saved) == "table" then
+            for k, v in pairs(saved) do
+                if Config[k] ~= nil then
+                    Config[k] = v
+                end
+            end
+        end
+    end
+end)
+
+local function SaveAllConfigToFile()
+    if not writefile then return false end
+    local ok = pcall(function()
+        local data = HttpService:JSONEncode(Config)
+        writefile("cathub_config.json", data)
+    end)
+    return ok
+end
+
+-- ==================== CƠ SỞ DỮ LIỆU ĐỘ KHÓ & LEVEL YÊU CẦU ==================== --
+local MapDifficultyDatabase = {
+    ["Desert Temple"] = {
+        {name = "Easy", lvl = 1}, {name = "Medium", lvl = 6}, {name = "Hard", lvl = 12}, {name = "Insane", lvl = 20}, {name = "Nightmare", lvl = 27}
+    },
+    ["Winter Outpost"] = {
+        {name = "Easy", lvl = 33}, {name = "Medium", lvl = 40}, {name = "Hard", lvl = 45}, {name = "Insane", lvl = 50}, {name = "Nightmare", lvl = 55}
+    },
+    ["Pirate Island"] = {
+        {name = "Insane", lvl = 60}, {name = "Nightmare", lvl = 65}
+    },
+    ["King's Castle"] = {
+        {name = "Insane", lvl = 70}, {name = "Nightmare", lvl = 75}
+    },
+    ["The Underworld"] = {
+        {name = "Insane", lvl = 80}, {name = "Nightmare", lvl = 85}
+    },
+    ["Samurai Palace"] = {
+        {name = "Insane", lvl = 90}, {name = "Nightmare", lvl = 95}
+    },
+    ["The Canals"] = {
+        {name = "Insane", lvl = 100}, {name = "Nightmare", lvl = 105}
+    },
+    ["Ghastly Harbor"] = {
+        {name = "Insane", lvl = 110}, {name = "Nightmare", lvl = 115}
+    },
+    ["Steampunk Sewers"] = {
+        {name = "Insane", lvl = 120}, {name = "Nightmare", lvl = 125}
+    },
+    ["Orbital Outpost"] = {
+        {name = "Insane", lvl = 140}, {name = "Nightmare", lvl = 145}
+    },
+    ["Volcanic Chambers"] = {
+        {name = "Insane", lvl = 150}, {name = "Nightmare", lvl = 155}
+    },
+    ["Aquatic Temple"] = {
+        {name = "Insane", lvl = 160}, {name = "Nightmare", lvl = 165}
+    },
+    ["Enchanted Forest"] = {
+        {name = "Insane", lvl = 170}, {name = "Nightmare", lvl = 175}
+    },
+    ["Northern Lands"] = {
+        {name = "Insane", lvl = 180}, {name = "Nightmare", lvl = 185}
+    },
+    ["Egg Island"] = {
+        {name = "Easy", lvl = 1}, {name = "Nightmare", lvl = 1}
+    }
+}
+
+local MapListOrdered = {
+    "Desert Temple", "Winter Outpost", "Pirate Island", "King's Castle",
+    "The Underworld", "Samurai Palace", "The Canals", "Ghastly Harbor",
+    "Steampunk Sewers", "Orbital Outpost", "Volcanic Chambers", "Aquatic Temple",
+    "Enchanted Forest", "Northern Lands", "Egg Island"
+}
+
+-- UI Theme
+local Theme = {
+    Background = Color3.fromRGB(38, 30, 22),
+    TopBar = Color3.fromRGB(52, 40, 28),
+    CardBg = Color3.fromRGB(48, 38, 28),
+    CardInner = Color3.fromRGB(60, 48, 34),
+    Primary = Color3.fromRGB(255, 185, 70),
+    PrimaryHover = Color3.fromRGB(255, 205, 110),
+    AccentPeach = Color3.fromRGB(255, 160, 120),
+    AccentGreen = Color3.fromRGB(90, 205, 125),
+    AccentRed = Color3.fromRGB(240, 85, 95),
+    TextTitle = Color3.fromRGB(255, 240, 205),
+    TextDesc = Color3.fromRGB(230, 215, 185),
+    TextMuted = Color3.fromRGB(180, 160, 135),
+    Border = Color3.fromRGB(255, 195, 90)
+}
+
+local function FormatNumber(n)
+    n = tonumber(n) or 0
+    if n >= 1e9 then
+        return string.format("%.2fB", n / 1e9):gsub("%.00", "")
+    elseif n >= 1e6 then
+        return string.format("%.2fM", n / 1e6):gsub("%.00", "")
+    elseif n >= 1e3 then
+        return string.format("%.1fK", n / 1e3):gsub("%.0", "")
+    else
+        return tostring(math.floor(n))
+    end
+end
+
+-- ======================================================================
+-- 1. HỆ THỐNG NHẬN DIỆN THÔNG TIN TRẬN ĐẤU CHÍNH XÁC 100%
+-- ======================================================================
+local function GetActiveMatchDetails()
+    local mapName = nil
+    local difficulty = nil
+    local isHardcore = false
+
+    pcall(function()
+        local Utility = ReplicatedStorage:FindFirstChild("Utility")
+        local PlaceManager = Utility and require(Utility:FindFirstChild("PlaceManager"))
+        if PlaceManager then
+            local tp = PlaceManager.GetPlaceTeleportData()
+            if tp and tp.dungeonStats then
+                mapName = tp.dungeonStats.dungeonName
+                difficulty = tp.dungeonStats.difficulty
+                if tp.dungeonStats.hardcore ~= nil then
+                    isHardcore = tp.dungeonStats.hardcore
+                end
+            end
+        end
+    end)
+
+    if not mapName or mapName == "" then
+        local dn = workspace:FindFirstChild("dungeonName")
+        if dn and dn:IsA("StringValue") and dn.Value ~= "" then
+            mapName = dn.Value
+        end
+    end
+
+    local hcVal = workspace:FindFirstChild("hardcore")
+    if hcVal and hcVal:IsA("BoolValue") then
+        isHardcore = hcVal.Value
+    end
+
+    pcall(function()
+        local myLobby = workspace:FindFirstChild("games") and workspace.games:FindFirstChild("inLobby") and workspace.games.inLobby:FindFirstChild(LocalPlayer.Name)
+        if myLobby and myLobby:FindFirstChild("mapName") then
+            local mf = myLobby.mapName
+            if not mapName or mapName == "" then mapName = mf.Value ~= "" and mf.Value or mf.Name end
+            if mf:FindFirstChild("difficulty") and mf.difficulty.Value ~= "" then
+                difficulty = mf.difficulty.Value
+            end
+            if mf:FindFirstChild("hardcore") then
+                isHardcore = mf.hardcore.Value
+            end
+        end
+    end)
+
+    mapName = mapName or Config.SelectedMap or "Desert Temple"
+    difficulty = difficulty or Config.SelectedDifficulty or "Easy"
+    if isHardcore == false and Config.IsHardcore == true then
+        isHardcore = true
+    end
+
+    return mapName, difficulty, isHardcore
+end
+
+-- ======================================================================
+-- 2. GỬI DISCORD WEBHOOK DUY NHẤT (THEO ĐÚNG MẪU YÊU CẦU)
+-- ======================================================================
+local HttpRequest = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+local lastRewardWebhookTick = 0
+
+local function SendRewardEmbedWebhook(rewardData)
+    local now = tick()
+    if now - lastRewardWebhookTick < 4 then return end
+    lastRewardWebhookTick = now
+
+    if not HttpRequest or Config.WebhookUrl == "" or not Config.WebhookUrl:find("http") then return end
+
+    local activeMap, activeDiff, isHardcore = GetActiveMatchDetails()
+    local modeText = isHardcore and "Hardcore (1 Mạng)" or "Normal (Thường)"
+
+    local itemsList = {}
+    local hasLegendary = false
+
+    if type(rewardData) == "table" and rewardData.items then
+        for _, itm in ipairs(rewardData.items) do
+            local itmName = itm.name or (itm.template and itm.template.Name) or "Vật phẩm"
+            local itmRarity = tostring(itm.rarity or "Common"):upper()
+
+            local icon = "⚪"
+            if itmRarity == "LEGENDARY" then
+                icon = "🟠"
+                hasLegendary = true
+            elseif itmRarity == "EPIC" then
+                icon = "🟣"
+            elseif itmRarity == "RARE" then
+                icon = "🔵"
+            elseif itmRarity == "UNCOMMON" then
+                icon = "🟢"
+            end
+
+            table.insert(itemsList, string.format("%s **[%s]** %s", icon, itmRarity, itmName))
+        end
+    end
+
+    local itemsStr = (#itemsList > 0) and table.concat(itemsList, "\n") or "• Không có trang bị mới rơi"
+
+    local goldEarned = (type(rewardData) == "table" and rewardData.gold) and FormatNumber(rewardData.gold) or "0"
+    local gemsEarned = (type(rewardData) == "table" and (rewardData.gems or rewardData.eventCurrency)) and FormatNumber(rewardData.gems or rewardData.eventCurrency) or "0"
+
+    local currentGold = "0"
+    local currentGems = "0"
+    pcall(function()
+        local ls = LocalPlayer:FindFirstChild("leaderstats")
+        if ls then
+            if ls:FindFirstChild("Gold") then currentGold = FormatNumber(ls.Gold.Value) end
+            if ls:FindFirstChild("Gems") then currentGems = FormatNumber(ls.Gems.Value) end
+        end
+    end)
+
+    local desc = string.format(
+        "**User :** ||%s||\n" ..
+        "**Hầm Ngục:** %s • **%s** (%s)\n\n" ..
+        "📦 **Danh sách trang bị rơi:**\n%s\n\n" ..
+        "-------------------------\n" ..
+        "💰 **Số Vàng Nhận:** `+%s Gold`\n" ..
+        "💎 **Số Kim Cương Nhận:** `+%s Gems`\n" ..
+        "-------------------------\n\n" ..
+        "📊 **Stats :**\n" ..
+        "💰 **Số vàng hiện có:** `%s Gold`\n" ..
+        "💎 **Số Kim Cương hiện có:** `%s Gems`",
+        LocalPlayer.Name,
+        activeMap,
+        activeDiff,
+        modeText,
+        itemsStr,
+        goldEarned,
+        gemsEarned,
+        currentGold,
+        currentGems
+    )
+
+    local contentMsg = nil
+    if hasLegendary then
+        local userId = Config.DiscordUserId ~= "" and Config.DiscordUserId or "everyone"
+        contentMsg = string.format("<@%s> 🔥 **CHÚC MỪNG BẠN VỪA NHẶT ĐƯỢC MÓN ĐỒ LEGENDARY SIÊU HIẾM!** 🔥", userId)
+    end
+
+    local embedColor = hasLegendary and 16753920 or 5814783
+
+    local payload = {
+        username = "🐱 CAT HUB • DUNGEON QUEST",
+        avatar_url = Config.WebhookAvatar,
+        content = contentMsg,
+        embeds = {
+            {
+                title = hasLegendary and "🌟 CHIẾN THẮNG & RƠI ĐỒ LEGENDARY!" or "🏆 CHIẾN THẮNG HẦM NGỤC & PHẦN THƯỞNG",
+                description = desc,
+                color = embedColor,
+                footer = {text = "Cat Hub Kaitun • CHEAP • FAST", icon_url = Config.WebhookAvatar},
+                timestamp = DateTime.now():ToIsoDate()
+            }
+        }
+    }
+
+    task.spawn(function()
+        pcall(function()
+            HttpRequest({
+                Url = Config.WebhookUrl,
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(payload)
+            })
+        end)
+    end)
+end
+
+if Remotes:FindFirstChild("cloneRewardGui") then
+    local conn = Remotes.cloneRewardGui.OnClientEvent:Connect(function(rewardData)
+        SendRewardEmbedWebhook(rewardData)
+    end)
+    table.insert(_G._CatHubConnsV21, conn)
+end
+
+-- ======================================================================
+-- 3. TỰ ĐỘNG START & REPLAY (CHỈ CHẠY KHI BẬT)
+-- ======================================================================
+local function AutoCheckStartAndReplay()
+    if not Config.AutoStart then return end
+    pcall(function()
+        if Remotes:FindFirstChild("changeStartValue") then Remotes.changeStartValue:FireServer() end
+        if Remotes:FindFirstChild("readyUp") then Remotes.readyUp:FireServer() end
+
+        local qGui = PlayerGui:FindFirstChild("queueGui") or PlayerGui:FindFirstChild("bossQueueGui")
+        if qGui and qGui:FindFirstChild("lobbyInfo", true) then
+            local sb = qGui:FindFirstChild("startButton", true)
+            if sb and sb:IsA("GuiButton") and sb.Visible then
+                if Remotes:FindFirstChild("startDungeon") then Remotes.startDungeon:FireServer() end
+                if firesignal then
+                    firesignal(sb.MouseButton1Down)
+                    firesignal(sb.MouseButton1Click)
+                end
+            end
+        end
+
+        for _, sg in ipairs(PlayerGui:GetChildren()) do
+            if sg:IsA("ScreenGui") and sg.Name ~= "CatHubMasterV21" and sg.Enabled then
+                for _, v in ipairs(sg:GetDescendants()) do
+                    if v:IsA("GuiButton") and v.Visible then
+                        local txt = (v:IsA("TextButton") and v.Text or ""):lower()
+                        local n = v.Name:lower()
+                        if n == "startbutton" or txt == "start" or txt:find("ready") then
+                            if firesignal then
+                                firesignal(v.MouseButton1Down)
+                                firesignal(v.MouseButton1Click)
+                                firesignal(v.Activated)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        if Config.AutoReplay then
+            local repMenu = PlayerGui:FindFirstChild("BossRaidReplayMenu") or PlayerGui:FindFirstChild("replayMenu") or PlayerGui:FindFirstChild("ReplayConfirmation")
+            if repMenu then
+                for _, b in ipairs(repMenu:GetDescendants()) do
+                    if b:IsA("GuiButton") and b.Visible then
+                        local n = b.Name:lower()
+                        local t = (b:IsA("TextButton") and b.Text or ""):lower()
+                        if n:find("replay") or n:find("yes") or t:find("replay") or t:find("yes") then
+                            if firesignal then
+                                firesignal(b.MouseButton1Down)
+                                firesignal(b.MouseButton1Click)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- ======================================================================
+-- 4. QUẢN LÝ PHÒNG TUYẾN TÍNH & NHẬN DIỆN BOSS CHUẨN XÁC 100%
+-- ======================================================================
+local currentActiveRoomName = "Chưa bật Auto Farm"
+
+local function CheckIsRealBoss(model, roomName)
+    if not model then return false end
+    if roomName and roomName:lower():find("boss") then return true end
+    local name = model.Name:lower()
+    -- Tuyệt đối KHÔNG coi các quái thường là Boss!
+    if name:find("warrior") or name:find("mage") or name:find("archer") or name:find("guard") or name:find("skeleton") or name:find("minion") then
+        return false
+    end
+    if name:find("demon lord") or name:find("azrallik") or name:find("boss") or name:find("kraken") or name:find("golem") or name:find("champion") then
+        return true
+    end
+    return false
+end
+
+local function GetOrderedRooms(dungeon)
+    local numberedRooms = {}
+    local bossRoom = nil
+    local otherRooms = {}
+
+    for _, child in ipairs(dungeon:GetChildren()) do
+        local nameLower = child.Name:lower()
+        if nameLower:find("boss") then
+            bossRoom = child
+        else
+            local num = tonumber(child.Name:match("%d+"))
+            if num then
+                table.insert(numberedRooms, {num = num, folder = child})
+            elseif nameLower ~= "initialroom" and nameLower ~= "spawn" then
+                table.insert(otherRooms, child)
+            end
+        end
+    end
+
+    table.sort(numberedRooms, function(a, b) return a.num < b.num end)
+
+    local ordered = {}
+    for _, r in ipairs(numberedRooms) do table.insert(ordered, r.folder) end
+    for _, r in ipairs(otherRooms) do table.insert(ordered, r) end
+    if bossRoom then table.insert(ordered, bossRoom) end
+
+    return ordered
+end
+
+local function GetSequentialTargetEnemy()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil, "Không có nhân vật" end
+
+    local myPos = hrp.Position
+    local dungeon = workspace:FindFirstChild("dungeon")
+
+    if dungeon then
+        local orderedRooms = GetOrderedRooms(dungeon)
+
+        for _, room in ipairs(orderedRooms) do
+            local ef = room:FindFirstChild("enemyFolder") or room:FindFirstChild("enemies") or room
+            local livingInThisRoom = {}
+
+            for _, m in ipairs(ef:GetChildren()) do
+                if m:IsA("Model") and m ~= char then
+                    local eHum = m:FindFirstChildOfClass("Humanoid")
+                    local ePart = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Head") or m:FindFirstChildOfClass("BasePart")
+                    if eHum and eHum.Health > 0 and ePart then
+                        local d = (myPos - ePart.Position).Magnitude
+                        table.insert(livingInThisRoom, {model = m, part = ePart, hum = eHum, dist = d})
+                    end
+                end
+            end
+
+            -- Nếu phòng này còn quái sống -> BÃI DUY NHẤT CẦN FARM!
+            if #livingInThisRoom > 0 then
+                currentActiveRoomName = room.Name
+                table.sort(livingInThisRoom, function(a, b) return a.dist < b.dist end)
+                return livingInThisRoom[1], room.Name
+            end
+        end
+    end
+
+    local enemiesFolder = workspace:FindFirstChild("enemies")
+    if enemiesFolder then
+        local best = nil
+        local minDist = math.huge
+        for _, m in ipairs(enemiesFolder:GetChildren()) do
+            if m:IsA("Model") and m ~= char then
+                local eHum = m:FindFirstChildOfClass("Humanoid")
+                local ePart = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Head") or m:FindFirstChildOfClass("BasePart")
+                if eHum and eHum.Health > 0 and ePart then
+                    local d = (myPos - ePart.Position).Magnitude
+                    if d < minDist then
+                        minDist = d
+                        best = {model = m, part = ePart, hum = eHum, dist = d}
+                    end
+                end
+            end
+        end
+        if best then
+            currentActiveRoomName = "Khu Vực Quái"
+            return best, "enemies"
+        end
+    end
+
+    currentActiveRoomName = "Đã dọn sạch quái!"
+    return nil, "Clean"
+end
+
+-- ======================================================================
+-- 5. HỆ THỐNG ESP QUÁI (ĐÁNH DẤU RÕ BÃI HIỆN TẠI)
+-- ======================================================================
+local function UpdateMobESP()
+    pcall(function()
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local myPos = hrp and hrp.Position or Vector3.zero
+
+        local dungeon = workspace:FindFirstChild("dungeon") or workspace:FindFirstChild("enemies")
+        if not dungeon then return end
+
+        for _, m in ipairs(dungeon:GetDescendants()) do
+            if m:IsA("Model") and m ~= char then
+                local eHum = m:FindFirstChildOfClass("Humanoid")
+                local ePart = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Head") or m:FindFirstChildOfClass("BasePart")
+
+                if eHum and eHum.Health > 0 and ePart then
+                    if Config.MobESP then
+                        local isInActiveRoom = m:IsDescendantOf(workspace) and (m.Parent and m.Parent.Parent and m.Parent.Parent.Name == currentActiveRoomName or m.Parent and m.Parent.Name == currentActiveRoomName)
+
+                        local hl = m:FindFirstChild("CatMobHighlight")
+                        if not hl then
+                            hl = Instance.new("Highlight")
+                            hl.Name = "CatMobHighlight"
+                            hl.FillTransparency = 0.55
+                            hl.OutlineTransparency = 0
+                            hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                            hl.Adornee = m
+                            hl.Parent = m
+                        end
+
+                        if isInActiveRoom then
+                            hl.FillColor = Color3.fromRGB(255, 50, 50)
+                            hl.OutlineColor = Color3.fromRGB(255, 220, 40)
+                        else
+                            hl.FillColor = Color3.fromRGB(80, 140, 255)
+                            hl.OutlineColor = Color3.fromRGB(120, 180, 255)
+                        end
+
+                        local bg = ePart:FindFirstChild("CatMobESP")
+                        if not bg then
+                            bg = Instance.new("BillboardGui")
+                            bg.Name = "CatMobESP"
+                            bg.Adornee = ePart
+                            bg.Size = UDim2.new(0, 170, 0, 26)
+                            bg.StudsOffset = Vector3.new(0, 4, 0)
+                            bg.AlwaysOnTop = true
+                            bg.Parent = ePart
+
+                            local txt = Instance.new("TextLabel")
+                            txt.Name = "InfoLabel"
+                            txt.Size = UDim2.new(1, 0, 1, 0)
+                            txt.BackgroundTransparency = 1
+                            txt.TextStrokeTransparency = 0
+                            txt.TextStrokeColor3 = Color3.fromRGB(20, 10, 5)
+                            txt.TextSize = 11
+                            txt.Font = Enum.Font.GothamBold
+                            txt.Parent = bg
+                        end
+
+                        local lbl = bg:FindFirstChild("InfoLabel")
+                        if lbl then
+                            local dist = math.floor((myPos - ePart.Position).Magnitude)
+                            local prefix = isInActiveRoom and "⚔️ [ĐANG ĐÁNH]" or "🔒 [PHÒNG TIẾP]"
+                            lbl.TextColor3 = isInActiveRoom and Color3.fromRGB(255, 230, 100) or Color3.fromRGB(180, 215, 255)
+                            lbl.Text = string.format("%s %s [%dm] (%s HP)", prefix, m.Name, dist, FormatNumber(eHum.Health))
+                        end
+                    else
+                        local hl = m:FindFirstChild("CatMobHighlight")
+                        if hl then hl:Destroy() end
+                        local bg = ePart:FindFirstChild("CatMobESP")
+                        if bg then bg:Destroy() end
+                    end
+                else
+                    local hl = m:FindFirstChild("CatMobHighlight")
+                    if hl then hl:Destroy() end
+                    local bg = ePart and ePart:FindFirstChild("CatMobESP")
+                    if bg then bg:Destroy() end
+                end
+            end
+        end
+    end)
+end
+
+-- ======================================================================
+-- 6. BỘ ĐIỀU HƯỚNG CHỐNG KẸT CẦU THANG & CHỐNG ĐÂM TƯỜNG (ANTI-STUCK)
+-- ======================================================================
+local activeMoveDir = Vector3.zero
+local cachedWaypoints = nil
+local cachedWaypointIdx = 2
+local lastComputeTime = 0
+local lastTargetPos = nil
+
+local function CheckStepOrLowObstacle(hrp, moveDirection)
+    if moveDirection.Magnitude < 0.1 then return false end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+
+    local footOrigin = hrp.Position - Vector3.new(0, 1.8, 0)
+    local footRay = workspace:Raycast(footOrigin, moveDirection * 2.8, rayParams)
+
+    local chestOrigin = hrp.Position + Vector3.new(0, 0.8, 0)
+    local chestRay = workspace:Raycast(chestOrigin, moveDirection * 2.8, rayParams)
+
+    if footRay and footRay.Instance.CanCollide and (not chestRay or not chestRay.Instance.CanCollide) then
+        return true
+    end
+
+    return false
+end
+
+local function GetSmartNavDirection(playerPos, targetPos)
+    local now = tick()
+    local needRecalculate = false
+
+    if not cachedWaypoints or cachedWaypointIdx > #cachedWaypoints then
+        needRecalculate = true
+    elseif (now - lastComputeTime > 2.0) then
+        needRecalculate = true
+    elseif lastTargetPos and (lastTargetPos - targetPos).Magnitude > 12 then
+        needRecalculate = true
+    end
+
+    if needRecalculate then
+        lastComputeTime = now
+        lastTargetPos = targetPos
+        local path = PathfindingService:CreatePath({
+            AgentRadius = 2.6,
+            AgentHeight = 5.2,
+            AgentCanJump = true,
+            WaypointSpacing = 3.2
+        })
+        local ok = pcall(function()
+            path:ComputeAsync(playerPos, targetPos)
+        end)
+        if ok and path.Status == Enum.PathStatus.Success then
+            cachedWaypoints = path:GetWaypoints()
+            cachedWaypointIdx = 2
+        else
+            cachedWaypoints = nil
+        end
+    end
+
+    if cachedWaypoints and cachedWaypointIdx <= #cachedWaypoints then
+        local wp = cachedWaypoints[cachedWaypointIdx]
+        local diff = wp.Position - playerPos
+        local horizDist = Vector2.new(diff.X, diff.Z).Magnitude
+
+        if horizDist < 3.2 then
+            cachedWaypointIdx = cachedWaypointIdx + 1
+            if cachedWaypointIdx <= #cachedWaypoints then
+                wp = cachedWaypoints[cachedWaypointIdx]
+                diff = wp.Position - playerPos
+            end
+        end
+
+        local shouldJump = (wp.Action == Enum.PathWaypointAction.Jump) or (diff.Y > 1.2)
+        local dir = Vector3.new(diff.X, 0, diff.Z).Unit
+        return dir, shouldJump
+    end
+
+    local directDiff = targetPos - playerPos
+    return Vector3.new(directDiff.X, 0, directDiff.Z).Unit, false
+end
+
+-- ======================================================================
+-- 7. HỆ THỐNG NÉ CHIÊU ĐỎ THÔNG MINH (THEO VIDEO REAPERX HUB)
+--    KHI GẶP VÙNG ĐỎ -> TỰ ĐỘNG BƯỚC RA KHỎI PHẠM VI MÀU ĐỎ ĐỨNG VÀO KHE AN TOÀN
+-- ======================================================================
+local function GetRedTelegraphDodgeVector(playerPos)
+    if not Config.AutoDodgeRed then return nil end
+    local char = LocalPlayer.Character
+    local bestDodgeDir = nil
+    local minDistanceToExit = math.huge
+
+    local function inspectPart(obj)
+        if not obj:IsA("BasePart") then return end
+        if char and obj:IsDescendantOf(char) then return end
+
+        local name = obj.Name:lower()
+        local parentName = obj.Parent and obj.Parent.Name:lower() or ""
+        local isDanger = false
+
+        -- 1. Nhận diện theo tên telegraph chuẩn của Dungeon Quest
+        if name == "precast" or name:find("indicator") or name:find("telegraph") or name:find("danger") then
+            isDanger = true
+        elseif parentName:find("spikes") or parentName:find("beam") or parentName:find("aoe") or parentName:find("flame") or parentName:find("laser") then
+            if name == "hitbox" or name == "part" or name == "precast" then
+                isDanger = true
+            end
+        end
+
+        -- 2. Nhận diện theo màu đỏ cảnh báo trên mặt sàn
+        if not isDanger and obj.Transparency < 0.95 and not obj.CanCollide then
+            local c = obj.Color
+            local isRed = (c.R > 0.70 and c.G < 0.38 and c.B < 0.38)
+            local isCrimson = (c.R > 0.80 and c.G < 0.50 and c.B < 0.50)
+            local isPurple = (c.R > 0.50 and c.G < 0.20 and c.B > 0.50)
+            if isRed or isCrimson or isPurple then
+                isDanger = true
+            end
+        end
+
+        if isDanger then
+            -- Chuyển tọa độ người chơi vào Object Space của part đỏ để tính toán chính xác
+            local localPos = obj.CFrame:PointToObjectSpace(playerPos)
+            local halfSize = obj.Size / 2
+            local margin = 3.5 -- Vùng đệm an toàn để bước hẳn ra khỏi mép màu đỏ
+
+            local isCylinder = (obj:IsA("Part") and obj.Shape == Enum.PartType.Cylinder) or name:find("circle") or (math.abs(halfSize.X - halfSize.Z) < 1.0 and halfSize.X > 5)
+
+            if isCylinder then
+                -- Vùng đỏ hình tròn / hình trụ
+                local radius = math.max(halfSize.X, halfSize.Z) + margin
+                local distFromCenter = Vector2.new(localPos.X, localPos.Z).Magnitude
+                if distFromCenter <= radius and math.abs(localPos.Y) <= (halfSize.Y + 8.0) then
+                    local distToExit = radius - distFromCenter
+                    local exitObj = (distFromCenter > 0.1) and Vector3.new(localPos.X, 0, localPos.Z).Unit or Vector3.new(1, 0, 0)
+                    local exitWorld = obj.CFrame:VectorToWorldSpace(exitObj)
+                    local exitDir = Vector3.new(exitWorld.X, 0, exitWorld.Z).Unit
+
+                    if distToExit < minDistanceToExit then
+                        minDistanceToExit = distToExit
+                        bestDodgeDir = exitDir
+                    end
+                end
+            else
+                -- Vùng đỏ hình chữ nhật / dải tia / rẻ quạt (như trong ảnh ReaperX Hub)
+                local inX = math.abs(localPos.X) <= (halfSize.X + margin)
+                local inZ = math.abs(localPos.Z) <= (halfSize.Z + margin)
+                local inY = math.abs(localPos.Y) <= (halfSize.Y + 8.0)
+
+                if inX and inZ and inY then
+                    -- Người chơi đang đứng trong vùng đỏ!
+                    local distToExitX = (halfSize.X + margin) - math.abs(localPos.X)
+                    local distToExitZ = (halfSize.Z + margin) - math.abs(localPos.Z)
+
+                    local exitVectorObject = Vector3.zero
+                    local exitDist = 0
+
+                    if distToExitX <= distToExitZ then
+                        -- Lối thoát ngắn nhất: Bước dạt ngang qua 2 bên mép (Perpendicular Strafe vào khe an toàn)
+                        local signX = (localPos.X >= 0) and 1 or -1
+                        exitVectorObject = Vector3.new(signX, 0, 0)
+                        exitDist = distToExitX
+                    else
+                        -- Lối thoát ngắn nhất: Bước theo chiều dọc
+                        local signZ = (localPos.Z >= 0) and 1 or -1
+                        exitVectorObject = Vector3.new(0, 0, signZ)
+                        exitDist = distToExitZ
+                    end
+
+                    local exitVectorWorld = obj.CFrame:VectorToWorldSpace(exitVectorObject)
+                    local exitDirHorizontal = Vector3.new(exitVectorWorld.X, 0, exitVectorWorld.Z).Unit
+
+                    if exitDist < minDistanceToExit then
+                        minDistanceToExit = exitDist
+                        bestDodgeDir = exitDirHorizontal
+                    end
+                end
+            end
+        end
+    end
+
+    for _, fName in ipairs({"flameParts", "vfxPool", "abilities", "mageBossLaserSpawns"}) do
+        local f = workspace:FindFirstChild(fName)
+        if f then
+            for _, o in ipairs(f:GetDescendants()) do inspectPart(o) end
+        end
+    end
+
+    for _, o in ipairs(workspace:GetChildren()) do
+        if o:IsA("BasePart") or o:IsA("Model") then
+            if o:IsA("BasePart") then
+                inspectPart(o)
+            else
+                for _, sub in ipairs(o:GetChildren()) do
+                    if sub:IsA("BasePart") then inspectPart(sub) end
+                end
+            end
+        end
+    end
+
+    return bestDodgeDir
+end
+
+-- ======================================================================
+-- 8. TỰ ĐỘNG CHÉM KIẾM & SPAM KỸ NĂNG Q & E
+-- ======================================================================
+local function CastSkillSlot(slotKey, slotIndex)
+    pcall(function()
+        local tool = nil
+        local bp = LocalPlayer:FindFirstChild("Backpack")
+        if bp then
+            for _, c in ipairs(bp:GetChildren()) do
+                if c:FindFirstChild("abilitySlot") and c.abilitySlot.Value == slotKey then
+                    tool = c
+                    break
+                end
+            end
+        end
+        if not tool and LocalPlayer.Character then
+            for _, c in ipairs(LocalPlayer.Character:GetChildren()) do
+                if c:IsA("Tool") and c:FindFirstChild("abilitySlot") and c.abilitySlot.Value == slotKey then
+                    tool = c
+                    break
+                end
+            end
+        end
+
+        if tool then
+            local cd = tool:FindFirstChild("cooldown")
+            if not cd or cd.Value <= 0 then
+                if tool:FindFirstChild("localEvent") then tool.localEvent:Fire() end
+                if Remotes:FindFirstChild("abilityUsed") then
+                    Remotes.abilityUsed:FireServer(slotKey, tool)
+                    Remotes.abilityUsed:FireServer(slotIndex)
+                end
+            end
+        else
+            if Remotes:FindFirstChild("abilityUsed") then
+                Remotes.abilityUsed:FireServer(slotIndex)
+                Remotes.abilityUsed:FireServer(slotKey)
+            end
+        end
+
+        if VirtualInputManager then
+            local keyCode = (slotKey == "q") and Enum.KeyCode.Q or Enum.KeyCode.E
+            VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+            task.delay(0.02, function()
+                VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+            end)
+        end
+    end)
+end
+
+local function ExecuteCombatActions()
+    pcall(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Accessory") and child:FindFirstChild("Weapon") then
+                local re = child:FindFirstChildOfClass("RemoteEvent")
+                if re then re:FireServer() end
+            end
+        end
+
+        if Remotes:FindFirstChild("weaponUsed") then
+            for _ = 1, 3 do Remotes.weaponUsed:FireServer() end
+        end
+
+        local tool = char:FindFirstChildOfClass("Tool")
+        if tool then tool:Activate() end
+        for _, item in ipairs(char:GetChildren()) do
+            for _, r in ipairs(item:GetDescendants()) do
+                if r:IsA("RemoteEvent") and (r.Name == "swing" or r.Name == "weaponSwing") then
+                    r:FireServer()
+                end
+            end
+        end
+
+        if Config.AutoSkills then
+            CastSkillSlot("q", 1)
+            CastSkillSlot("e", 2)
+        end
+    end)
+end
+
+-- ======================================================================
+-- 9. HỆ THỐNG NÂNG STAT LINH HOẠT (1:1:1, 1:1, HOẶC 1)
+-- ======================================================================
+local function AutoUpgradeStats()
+    local chosen = {}
+    if Config.AutoPhysical then table.insert(chosen, "physicalPower") end
+    if Config.AutoStamina then table.insert(chosen, "stamina") end
+    if Config.AutoSpell then table.insert(chosen, "spellPower") end
+
+    if #chosen == 0 then return end
+
+    pcall(function()
+        local ptsValue = LocalPlayer:FindFirstChild("skillPoints")
+        local totalPts = ptsValue and ptsValue.Value or 0
+        if totalPts <= 0 or not Remotes:FindFirstChild("spendSkillPoint") then return end
+
+        if #chosen == 1 then
+            Remotes.spendSkillPoint:FireServer(chosen[1], totalPts)
+        elseif #chosen == 2 then
+            local half = math.floor(totalPts / 2)
+            if half > 0 then
+                Remotes.spendSkillPoint:FireServer(chosen[1], half)
+                Remotes.spendSkillPoint:FireServer(chosen[2], half)
+            end
+            local rem = totalPts - half * 2
+            if rem > 0 then
+                Remotes.spendSkillPoint:FireServer(chosen[1], rem)
+            end
+        elseif #chosen == 3 then
+            local third = math.floor(totalPts / 3)
+            if third > 0 then
+                Remotes.spendSkillPoint:FireServer("physicalPower", third)
+                Remotes.spendSkillPoint:FireServer("stamina", third)
+                Remotes.spendSkillPoint:FireServer("spellPower", third)
+            end
+            local rem = totalPts - third * 3
+            if rem > 0 then
+                Remotes.spendSkillPoint:FireServer("physicalPower", rem)
+            end
+        end
+    end)
+end
+
+-- ======================================================================
+-- 10. MẶC ĐỒ THỦ CÔNG
+-- ======================================================================
+local function EquipBestGearManual(buildType)
+    local success, err = pcall(function()
+        if not Remotes:FindFirstChild("reloadInvy") or not Remotes:FindFirstChild("equipItem") then return end
+        local inv = Remotes.reloadInvy:InvokeServer()
+        if not inv then return end
+
+        local isPhys = (buildType == "Physical")
+
+        local bestWeaponNum = nil
+        local bestWeaponScore = -1
+        if inv.weapons then
+            for k, v in pairs(inv.weapons) do
+                local score = isPhys and (tonumber(v.physicalDamage) or 0) or (tonumber(v.spellPower) or 0)
+                if score > bestWeaponScore then
+                    bestWeaponScore = score
+                    bestWeaponNum = tonumber(string.match(k, "%d+"))
+                end
+            end
+        end
+        if bestWeaponNum then Remotes.equipItem:InvokeServer("weapon", bestWeaponNum) end
+
+        local bestChestNum = nil
+        local bestChestScore = -1
+        if inv.chests then
+            for k, v in pairs(inv.chests) do
+                local hp = tonumber(v.health) or 0
+                local pwr = isPhys and (tonumber(v.physicalPower) or 0) or (tonumber(v.spellPower) or 0)
+                local score = hp + pwr * 2
+                if score > bestChestScore then
+                    bestChestScore = score
+                    bestChestNum = tonumber(string.match(k, "%d+"))
+                end
+            end
+        end
+        if bestChestNum then Remotes.equipItem:InvokeServer("chest", bestChestNum) end
+
+        local bestHelmetNum = nil
+        local bestHelmetScore = -1
+        if inv.helmets then
+            for k, v in pairs(inv.helmets) do
+                local hp = tonumber(v.health) or 0
+                local pwr = isPhys and (tonumber(v.physicalPower) or 0) or (tonumber(v.spellPower) or 0)
+                local score = hp + pwr * 2
+                if score > bestHelmetScore then
+                    bestHelmetScore = score
+                    bestHelmetNum = tonumber(string.match(k, "%d+"))
+                end
+            end
+        end
+        if bestHelmetNum then Remotes.equipItem:InvokeServer("helmet", bestHelmetNum) end
+
+        local abilityList = {}
+        if inv.abilities then
+            for k, v in pairs(inv.abilities) do
+                local num = tonumber(string.match(k, "%d+"))
+                if num then
+                    local desc = tostring(v.description or ""):lower()
+                    local match = isPhys and desc:find("physical") or desc:find("spell")
+                    table.insert(abilityList, {num = num, match = match and 1 or 0})
+                end
+            end
+        end
+        table.sort(abilityList, function(a, b) return a.match > b.match end)
+        if #abilityList >= 1 then Remotes.equipItem:InvokeServer("ability", abilityList[1].num, "q") end
+        if #abilityList >= 2 then Remotes.equipItem:InvokeServer("ability", abilityList[2].num, "e") end
+    end)
+    return success
+end
+
+-- ======================================================================
+-- 11. TÍNH TOÁN GIÁ TRỊ VÀ BÁN ĐỒ (SMART SELL SHOP)
+-- ======================================================================
+local function GetSelectedSellData()
+    local totalGold = 0
+    local count = 0
+    local toSell = {weapon = {}, ability = {}, chest = {}, helmet = {}}
+
+    local ok, inv = pcall(function() return Remotes.reloadInvy:InvokeServer() end)
+    if not ok or not inv then return 0, 0, toSell end
+
+    local selRarities = {
+        common = Config.AutoSellCommon,
+        uncommon = Config.AutoSellUncommon,
+        rare = Config.AutoSellRare,
+        epic = Config.AutoSellEpic,
+        legendary = Config.AutoSellLegendary
+    }
+
+    if inv.weapons then
+        for k, v in pairs(inv.weapons) do
+            if v.equipped == false and selRarities[tostring(v.rarity):lower()] then
+                local num = string.match(k, "%d+")
+                table.insert(toSell.weapon, num)
+                count = count + 1
+                totalGold = totalGold + (tonumber(v.sellPrice) or 0)
+            end
+        end
+    end
+    if inv.abilities then
+        for k, v in pairs(inv.abilities) do
+            local isEq = (type(v.equipped) == "table" and (v.equipped.q or v.equipped.e or v.equipped.q2 or v.equipped.e2)) or (v.equipped == true)
+            if not isEq and selRarities[tostring(v.rarity):lower()] then
+                local num = string.match(k, "%d+")
+                table.insert(toSell.ability, num)
+                count = count + 1
+                totalGold = totalGold + (tonumber(v.sellPrice) or 0)
+            end
+        end
+    end
+    if inv.chests then
+        for k, v in pairs(inv.chests) do
+            if v.equipped == false and selRarities[tostring(v.rarity):lower()] then
+                local num = string.match(k, "%d+")
+                table.insert(toSell.chest, num)
+                count = count + 1
+                totalGold = totalGold + (tonumber(v.sellPrice) or 0)
+            end
+        end
+    end
+    if inv.helmets then
+        for k, v in pairs(inv.helmets) do
+            if v.equipped == false and selRarities[tostring(v.rarity):lower()] then
+                local num = string.match(k, "%d+")
+                table.insert(toSell.helmet, num)
+                count = count + 1
+                totalGold = totalGold + (tonumber(v.sellPrice) or 0)
+            end
+        end
+    end
+
+    return totalGold, count, toSell
+end
+
+-- ======================================================================
+-- 12. GIAO DIỆN CAT HUB V21
+-- ======================================================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "CatHubMasterV21"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 100
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = PlayerGui
+getgenv()._CatHubMasterV21 = ScreenGui
+
+local FloatBtn = Instance.new("ImageButton")
+FloatBtn.Name = "CatFloatBtn"
+FloatBtn.Size = UDim2.new(0, 56, 0, 56)
+FloatBtn.Position = UDim2.new(0, 18, 0.38, 0)
+FloatBtn.BackgroundColor3 = Theme.TopBar
+FloatBtn.Image = CatLogoAsset
+FloatBtn.BorderSizePixel = 0
+FloatBtn.Active = true
+FloatBtn.Draggable = true
+FloatBtn.Parent = ScreenGui
+
+local FloatCorner = Instance.new("UICorner")
+FloatCorner.CornerRadius = UDim.new(1, 0)
+FloatCorner.Parent = FloatBtn
+
+local FloatStroke = Instance.new("UIStroke")
+FloatStroke.Color = Theme.Border
+FloatStroke.Thickness = 2.5
+FloatStroke.Parent = FloatBtn
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 460, 0, 540)
+MainFrame.Position = UDim2.new(0.5, -230, 0.5, -270)
+MainFrame.BackgroundColor3 = Theme.Background
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 14)
+MainCorner.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Theme.Border
+MainStroke.Thickness = 2
+MainStroke.Parent = MainFrame
+
+local TopBar = Instance.new("Frame")
+TopBar.Name = "TopBar"
+TopBar.Size = UDim2.new(1, 0, 0, 56)
+TopBar.BackgroundColor3 = Theme.TopBar
+TopBar.BorderSizePixel = 0
+TopBar.Parent = MainFrame
+
+local TopBarCorner = Instance.new("UICorner")
+TopBarCorner.CornerRadius = UDim.new(0, 14)
+TopBarCorner.Parent = TopBar
+
+local LogoImg = Instance.new("ImageLabel")
+LogoImg.Size = UDim2.new(0, 42, 0, 42)
+LogoImg.Position = UDim2.new(0, 10, 0, 7)
+LogoImg.BackgroundColor3 = Theme.CardInner
+LogoImg.Image = CatLogoAsset
+LogoImg.BorderSizePixel = 0
+LogoImg.Parent = TopBar
+
+local LogoCorner = Instance.new("UICorner")
+LogoCorner.CornerRadius = UDim.new(1, 0)
+LogoCorner.Parent = LogoImg
+
+local LogoStroke = Instance.new("UIStroke")
+LogoStroke.Color = Theme.Border
+LogoStroke.Thickness = 1.5
+LogoStroke.Parent = LogoImg
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -110, 0, 24)
+Title.Position = UDim2.new(0, 60, 0, 6)
+Title.BackgroundTransparency = 1
+Title.Text = "🐱 CAT HUB (KAITUN) - MASTER V21"
+Title.TextColor3 = Theme.Primary
+Title.TextSize = 14
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TopBar
+
+local SubTitle = Instance.new("TextLabel")
+SubTitle.Size = UDim2.new(1, -110, 0, 18)
+SubTitle.Position = UDim2.new(0, 60, 0, 28)
+SubTitle.BackgroundTransparency = 1
+SubTitle.Text = "🛡️ Tự Thoát Khỏi Vùng Đỏ Vào Khe An Toàn • Boss Spam • Lưu Config"
+SubTitle.TextColor3 = Theme.TextDesc
+SubTitle.TextSize = 10
+SubTitle.Font = Enum.Font.GothamMedium
+SubTitle.TextXAlignment = Enum.TextXAlignment.Left
+SubTitle.Parent = TopBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Name = "CloseBtn"
+CloseBtn.Size = UDim2.new(0, 32, 0, 32)
+CloseBtn.Position = UDim2.new(1, -40, 0, 12)
+CloseBtn.BackgroundColor3 = Theme.AccentRed
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseBtn.TextSize = 13
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.BorderSizePixel = 0
+CloseBtn.Parent = TopBar
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 8)
+CloseCorner.Parent = CloseBtn
+
+local TabsBar = Instance.new("Frame")
+TabsBar.Name = "TabsBar"
+TabsBar.Size = UDim2.new(1, -20, 0, 36)
+TabsBar.Position = UDim2.new(0, 10, 0, 62)
+TabsBar.BackgroundColor3 = Theme.CardBg
+TabsBar.BorderSizePixel = 0
+TabsBar.Parent = MainFrame
+
+local TabsCorner = Instance.new("UICorner")
+TabsCorner.CornerRadius = UDim.new(0, 8)
+TabsCorner.Parent = TabsBar
+
+local TabsLayout = Instance.new("UIListLayout")
+TabsLayout.FillDirection = Enum.FillDirection.Horizontal
+TabsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+TabsLayout.Padding = UDim.new(0, 4)
+TabsLayout.Parent = TabsBar
+
+local PagesContainer = Instance.new("Frame")
+PagesContainer.Name = "PagesContainer"
+PagesContainer.Size = UDim2.new(1, -20, 1, -110)
+PagesContainer.Position = UDim2.new(0, 10, 0, 102)
+PagesContainer.BackgroundTransparency = 1
+PagesContainer.Parent = MainFrame
+
+local function createPage(name)
+    local page = Instance.new("ScrollingFrame")
+    page.Name = name
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 4
+    page.ScrollBarImageColor3 = Theme.Primary
+    page.CanvasSize = UDim2.new(0, 0, 0, 620)
+    page.Visible = false
+    page.Parent = PagesContainer
+    
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 8)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = page
+    return page
+end
+
+local function createCard(parent, height)
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, height)
+    card.BackgroundColor3 = Theme.CardBg
+    card.BorderSizePixel = 0
+    card.Parent = parent
+    
+    local cCorner = Instance.new("UICorner")
+    cCorner.CornerRadius = UDim.new(0, 10)
+    cCorner.Parent = card
+    
+    local cStroke = Instance.new("UIStroke")
+    cStroke.Color = Theme.CardInner
+    cStroke.Thickness = 1.2
+    cStroke.Parent = card
+    return card
+end
+
+local PageFarm = createPage("FarmPage")
+local PageEquip = createPage("EquipPage")
+local PageSell = createPage("SellPage")
+local PageDungeon = createPage("DungeonPage")
+local PageSettings = createPage("SettingsPage")
+
+local tabs = {
+    {name = "⚡ Farm", page = PageFarm},
+    {name = "🗡️ Trang Bị", page = PageEquip},
+    {name = "💰 Bán Đồ", page = PageSell},
+    {name = "🗺️ Chọn Map", page = PageDungeon},
+    {name = "⚙️ Cài Đặt", page = PageSettings}
+}
+
+local function switchTab(tabData, btn)
+    for _, t in ipairs(tabs) do t.page.Visible = (t == tabData) end
+    for _, b in pairs(TabsBar:GetChildren()) do
+        if b:IsA("TextButton") then
+            b.BackgroundColor3 = Theme.CardInner
+            b.TextColor3 = Theme.TextDesc
+        end
+    end
+    btn.BackgroundColor3 = Theme.Primary
+    btn.TextColor3 = Color3.fromRGB(35, 25, 15)
+end
+
+for i, tabInfo in ipairs(tabs) do
+    local tabBtn = Instance.new("TextButton")
+    tabBtn.Size = UDim2.new(0, 80, 1, -6)
+    tabBtn.Position = UDim2.new(0, 0, 0, 3)
+    tabBtn.BackgroundColor3 = (i == 1) and Theme.Primary or Theme.CardInner
+    tabBtn.Text = tabInfo.name
+    tabBtn.TextColor3 = (i == 1) and Color3.fromRGB(35, 25, 15) or Theme.TextDesc
+    tabBtn.TextSize = 10
+    tabBtn.Font = Enum.Font.GothamBold
+    tabBtn.BorderSizePixel = 0
+    tabBtn.Parent = TabsBar
+    
+    local tCorner = Instance.new("UICorner")
+    tCorner.CornerRadius = UDim.new(0, 6)
+    tCorner.Parent = tabBtn
+    
+    tabBtn.MouseButton1Click:Connect(function() switchTab(tabInfo, tabBtn) end)
+    if i == 1 then tabInfo.page.Visible = true end
+end
+
+local function createToggle(parent, title, desc, defaultState, callback)
+    local card = createCard(parent, 68)
+    
+    local tLabel = Instance.new("TextLabel")
+    tLabel.Size = UDim2.new(1, -85, 0, 22)
+    tLabel.Position = UDim2.new(0, 12, 0, 10)
+    tLabel.BackgroundTransparency = 1
+    tLabel.Text = title
+    tLabel.TextColor3 = Theme.TextTitle
+    tLabel.TextSize = 12
+    tLabel.Font = Enum.Font.GothamBold
+    tLabel.TextXAlignment = Enum.TextXAlignment.Left
+    tLabel.Parent = card
+    
+    local dLabel = Instance.new("TextLabel")
+    dLabel.Size = UDim2.new(1, -85, 0, 24)
+    dLabel.Position = UDim2.new(0, 12, 0, 32)
+    dLabel.BackgroundTransparency = 1
+    dLabel.Text = desc
+    dLabel.TextColor3 = Theme.TextMuted
+    dLabel.TextSize = 10
+    dLabel.Font = Enum.Font.GothamMedium
+    dLabel.TextXAlignment = Enum.TextXAlignment.Left
+    dLabel.Parent = card
+    
+    local SwitchBtn = Instance.new("TextButton")
+    SwitchBtn.Size = UDim2.new(0, 52, 0, 28)
+    SwitchBtn.Position = UDim2.new(1, -66, 0.5, -14)
+    SwitchBtn.BackgroundColor3 = defaultState and Theme.AccentGreen or Color3.fromRGB(60, 48, 36)
+    SwitchBtn.Text = ""
+    SwitchBtn.BorderSizePixel = 0
+    SwitchBtn.AutoButtonColor = false
+    SwitchBtn.Parent = card
+
+    local TrackCorner = Instance.new("UICorner")
+    TrackCorner.CornerRadius = UDim.new(1, 0)
+    TrackCorner.Parent = SwitchBtn
+
+    local TrackStroke = Instance.new("UIStroke")
+    TrackStroke.Color = defaultState and Color3.fromRGB(120, 230, 150) or Color3.fromRGB(80, 65, 50)
+    TrackStroke.Thickness = 1.2
+    TrackStroke.Parent = SwitchBtn
+
+    local Knob = Instance.new("Frame")
+    Knob.Size = UDim2.new(0, 22, 0, 22)
+    Knob.Position = defaultState and UDim2.new(1, -25, 0.5, -11) or UDim2.new(0, 3, 0.5, -11)
+    Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Knob.BorderSizePixel = 0
+    Knob.Parent = SwitchBtn
+
+    local KnobCorner = Instance.new("UICorner")
+    KnobCorner.CornerRadius = UDim.new(1, 0)
+    KnobCorner.Parent = Knob
+
+    local state = defaultState
+    SwitchBtn.MouseButton1Click:Connect(function()
+        state = not state
+        local targetPos = state and UDim2.new(1, -25, 0.5, -11) or UDim2.new(0, 3, 0.5, -11)
+        local targetColor = state and Theme.AccentGreen or Color3.fromRGB(60, 48, 36)
+        local targetStroke = state and Color3.fromRGB(120, 230, 150) or Color3.fromRGB(80, 65, 50)
+
+        TweenService:Create(Knob, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Position = targetPos
+        }):Play()
+        TweenService:Create(SwitchBtn, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundColor3 = targetColor
+        }):Play()
+        TweenService:Create(TrackStroke, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Color = targetStroke
+        }):Play()
+
+        callback(state)
+    end)
+    return card
+end
+
+-- ==================== TAB 1: FARM & CHIẾN ĐẤU ==================== --
+local StatusCard = createCard(PageFarm, 52)
+local RoomStatusLabel = Instance.new("TextLabel")
+RoomStatusLabel.Size = UDim2.new(1, -20, 1, 0)
+RoomStatusLabel.Position = UDim2.new(0, 12, 0, 0)
+RoomStatusLabel.BackgroundTransparency = 1
+RoomStatusLabel.Text = "📍 Tiến độ: Đang chờ bạn bật Auto Farm..."
+RoomStatusLabel.TextColor3 = Theme.Primary
+RoomStatusLabel.TextSize = 12
+RoomStatusLabel.Font = Enum.Font.GothamBold
+RoomStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+RoomStatusLabel.Parent = StatusCard
+
+createToggle(PageFarm, "⚔️ Master Auto Farm (Tới Nơi Mới Đánh)", "Chạy tới sát quái mới chém kiếm & sài skill. Gặp boss thì spam skill", Config.AutoFarm, function(v) 
+    Config.AutoFarm = v 
+    if not v then
+        activeMoveDir = Vector3.zero
+        RoomStatusLabel.Text = "📍 Tiến độ: Đã dừng Auto Farm"
+    end
+end)
+createToggle(PageFarm, "🔥 Tự Động Sài Skill Q & E", "Khi tiếp cận mục tiêu sẽ tự động spam skill Q & E", Config.AutoSkills, function(v) Config.AutoSkills = v end)
+createToggle(PageFarm, "🛡️ Né Chiêu Đỏ Thoát Vào Khe An Toàn", "Tự động bước ra khỏi vùng đỏ đứng vào chỗ trống an toàn", Config.AutoDodgeRed, function(v) Config.AutoDodgeRed = v end)
+createToggle(PageFarm, "👁️ ESP Quái (Highlight & Khoảng Cách)", "Hiện viền sáng đỏ/vàng quái phòng hiện tại + khoảng cách & HP", Config.MobESP, function(v) Config.MobESP = v end)
+createToggle(PageFarm, "▶️ Tự Động Bấm Start & Replay", "Gọi trực tiếp remote changeStartValue & readyUp để vào trận ngay", Config.AutoStart, function(v) Config.AutoStart = v Config.AutoReplay = v end)
+
+-- ==================== TAB 2: TRANG BỊ & NÂNG STATS LINH HOẠT ==================== --
+local BuildCard = createCard(PageEquip, 130)
+local BuildTitle = Instance.new("TextLabel")
+BuildTitle.Size = UDim2.new(1, -20, 0, 20)
+BuildTitle.Position = UDim2.new(0, 12, 0, 6)
+BuildTitle.BackgroundTransparency = 1
+BuildTitle.Text = "🗡️ Chọn Hệ Trang Bị & Mặc Đồ:"
+BuildTitle.TextColor3 = Theme.Primary
+BuildTitle.TextSize = 12
+BuildTitle.Font = Enum.Font.GothamBold
+BuildTitle.TextXAlignment = Enum.TextXAlignment.Left
+BuildTitle.Parent = BuildCard
+
+local PhysBtn = Instance.new("TextButton")
+PhysBtn.Size = UDim2.new(0.46, 0, 0, 32)
+PhysBtn.Position = UDim2.new(0, 12, 0, 30)
+PhysBtn.BackgroundColor3 = (Config.CurrentBuild == "Physical") and Theme.Primary or Theme.CardInner
+PhysBtn.Text = "⚔️ Hệ Vật Lý (Physical)"
+PhysBtn.TextColor3 = (Config.CurrentBuild == "Physical") and Color3.fromRGB(35, 25, 15) or Theme.TextDesc
+PhysBtn.TextSize = 11
+PhysBtn.Font = Enum.Font.GothamBold
+PhysBtn.BorderSizePixel = 0
+PhysBtn.Parent = BuildCard
+
+local PhysC = Instance.new("UICorner")
+PhysC.CornerRadius = UDim.new(0, 8)
+PhysC.Parent = PhysBtn
+
+local SpellBtn = Instance.new("TextButton")
+SpellBtn.Size = UDim2.new(0.46, 0, 0, 32)
+SpellBtn.Position = UDim2.new(0.52, 0, 0, 30)
+SpellBtn.BackgroundColor3 = (Config.CurrentBuild == "Spell") and Theme.Primary or Theme.CardInner
+SpellBtn.Text = "🔮 Hệ Phép (Spell)"
+SpellBtn.TextColor3 = (Config.CurrentBuild == "Spell") and Color3.fromRGB(35, 25, 15) or Theme.TextDesc
+SpellBtn.TextSize = 11
+SpellBtn.Font = Enum.Font.GothamBold
+SpellBtn.BorderSizePixel = 0
+SpellBtn.Parent = BuildCard
+
+local SpellC = Instance.new("UICorner")
+SpellC.CornerRadius = UDim.new(0, 8)
+SpellC.Parent = SpellBtn
+
+local EquipNowBtn = Instance.new("TextButton")
+EquipNowBtn.Size = UDim2.new(1, -24, 0, 36)
+EquipNowBtn.Position = UDim2.new(0, 12, 0, 72)
+EquipNowBtn.BackgroundColor3 = Theme.AccentGreen
+EquipNowBtn.Text = "✨ MẶC ĐỒ TỐT NHẤT NGAY"
+EquipNowBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+EquipNowBtn.TextSize = 12
+EquipNowBtn.Font = Enum.Font.GothamBold
+EquipNowBtn.BorderSizePixel = 0
+EquipNowBtn.Parent = BuildCard
+
+local EqCorner = Instance.new("UICorner")
+EqCorner.CornerRadius = UDim.new(0, 8)
+EqCorner.Parent = EquipNowBtn
+
+PhysBtn.MouseButton1Click:Connect(function()
+    Config.CurrentBuild = "Physical"
+    PhysBtn.BackgroundColor3 = Theme.Primary
+    PhysBtn.TextColor3 = Color3.fromRGB(35, 25, 15)
+    SpellBtn.BackgroundColor3 = Theme.CardInner
+    SpellBtn.TextColor3 = Theme.TextDesc
+end)
+
+SpellBtn.MouseButton1Click:Connect(function()
+    Config.CurrentBuild = "Spell"
+    SpellBtn.BackgroundColor3 = Theme.Primary
+    SpellBtn.TextColor3 = Color3.fromRGB(35, 25, 15)
+    PhysBtn.BackgroundColor3 = Theme.CardInner
+    PhysBtn.TextColor3 = Theme.TextDesc
+end)
+
+EquipNowBtn.MouseButton1Click:Connect(function()
+    EquipNowBtn.Text = "⏳ Đang quét kho đồ & trang bị..."
+    local ok = EquipBestGearManual(Config.CurrentBuild)
+    task.wait(1)
+    EquipNowBtn.Text = ok and "✅ ĐÃ MẶC ĐỒ TỐI ƯU THÀNH CÔNG!" or "⚠️ Đã trang bị xong!"
+    task.wait(1.5)
+    EquipNowBtn.Text = "✨ MẶC ĐỒ TỐT NHẤT NGAY"
+end)
+
+local StatsCard = createCard(PageEquip, 145)
+local StatsTitle = Instance.new("TextLabel")
+StatsTitle.Size = UDim2.new(1, -20, 0, 20)
+StatsTitle.Position = UDim2.new(0, 12, 0, 6)
+StatsTitle.BackgroundTransparency = 1
+StatsTitle.Text = "💪 Tự Nâng Stats (Chọn 3 -> 1:1:1 | Chọn 2 -> 1:1 | Chọn 1 -> 100%):"
+StatsTitle.TextColor3 = Theme.Primary
+StatsTitle.TextSize = 11
+StatsTitle.Font = Enum.Font.GothamBold
+StatsTitle.TextXAlignment = Enum.TextXAlignment.Left
+StatsTitle.Parent = StatsCard
+
+local function createStatCheckbox(parent, yOffset, title, configKey)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -24, 0, 32)
+    btn.Position = UDim2.new(0, 12, 0, yOffset)
+    btn.BackgroundColor3 = Config[configKey] and Theme.AccentGreen or Theme.CardInner
+    btn.Text = (Config[configKey] and "  [X] " or "  [ ] ") .. title
+    btn.TextColor3 = Config[configKey] and Color3.fromRGB(255, 255, 255) or Theme.TextDesc
+    btn.TextSize = 11
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.BorderSizePixel = 0
+    btn.Parent = parent
+
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 6)
+    bc.Parent = btn
+
+    btn.MouseButton1Click:Connect(function()
+        Config[configKey] = not Config[configKey]
+        btn.BackgroundColor3 = Config[configKey] and Theme.AccentGreen or Theme.CardInner
+        btn.Text = (Config[configKey] and "  [X] " or "  [ ] ") .. title
+        btn.TextColor3 = Config[configKey] and Color3.fromRGB(255, 255, 255) or Theme.TextDesc
+    end)
+    return btn
+end
+
+createStatCheckbox(StatsCard, 30, "Auto Nâng Physical Power (Vật lý)", "AutoPhysical")
+createStatCheckbox(StatsCard, 68, "Auto Nâng Stamina (Máu / HP)", "AutoStamina")
+createStatCheckbox(StatsCard, 106, "Auto Nâng Spell Power (Sức mạnh phép)", "AutoSpell")
+
+-- ==================== TAB 3: BÁN ĐỒ (SMART SELL SHOP) ==================== --
+local SellCard = createCard(PageSell, 275)
+local SellTitle = Instance.new("TextLabel")
+SellTitle.Size = UDim2.new(1, -20, 0, 22)
+SellTitle.Position = UDim2.new(0, 12, 0, 8)
+SellTitle.BackgroundTransparency = 1
+SellTitle.Text = "💰 Bán Đồ Thông Minh (Smart Sell Shop):"
+SellTitle.TextColor3 = Theme.Primary
+SellTitle.TextSize = 12
+SellTitle.Font = Enum.Font.GothamBold
+SellTitle.TextXAlignment = Enum.TextXAlignment.Left
+SellTitle.Parent = SellCard
+
+local ValueBanner = Instance.new("Frame")
+ValueBanner.Size = UDim2.new(1, -24, 0, 36)
+ValueBanner.Position = UDim2.new(0, 12, 0, 32)
+ValueBanner.BackgroundColor3 = Theme.CardInner
+ValueBanner.BorderSizePixel = 0
+ValueBanner.Parent = SellCard
+
+local VbCorner = Instance.new("UICorner")
+VbCorner.CornerRadius = UDim.new(0, 8)
+VbCorner.Parent = ValueBanner
+
+local ValueLabel = Instance.new("TextLabel")
+ValueLabel.Size = UDim2.new(1, -16, 1, 0)
+ValueLabel.Position = UDim2.new(0, 8, 0, 0)
+ValueLabel.BackgroundTransparency = 1
+ValueLabel.Text = "💰 Có thể bán: 0 Gold (0 vật phẩm)"
+ValueLabel.TextColor3 = Theme.AccentGreen
+ValueLabel.TextSize = 12
+ValueLabel.Font = Enum.Font.GothamBold
+ValueLabel.TextXAlignment = Enum.TextXAlignment.Left
+ValueLabel.Parent = ValueBanner
+
+local ExecuteSellBtn = Instance.new("TextButton")
+ExecuteSellBtn.Size = UDim2.new(1, -24, 0, 40)
+ExecuteSellBtn.Position = UDim2.new(0, 12, 0, 220)
+ExecuteSellBtn.BackgroundColor3 = Theme.Primary
+ExecuteSellBtn.Text = "💲 BÁN TẤT CẢ VẬT PHẨM ĐÃ CHỌN"
+ExecuteSellBtn.TextColor3 = Color3.fromRGB(35, 25, 15)
+ExecuteSellBtn.TextSize = 12
+ExecuteSellBtn.Font = Enum.Font.GothamBold
+ExecuteSellBtn.BorderSizePixel = 0
+ExecuteSellBtn.Parent = SellCard
+
+local ExCorner = Instance.new("UICorner")
+ExCorner.CornerRadius = UDim.new(0, 8)
+ExCorner.Parent = ExecuteSellBtn
+
+local rarityToggles = {
+    {name = "Common (Thường)", key = "AutoSellCommon"},
+    {name = "Uncommon (Không Thường)", key = "AutoSellUncommon"},
+    {name = "Rare (Hiếm)", key = "AutoSellRare"},
+    {name = "Epic (Sử Thi)", key = "AutoSellEpic"},
+    {name = "Legendary (Huyền Thoại)", key = "AutoSellLegendary"}
+}
+
+local currentToSellData = {weapon = {}, ability = {}, chest = {}, helmet = {}}
+local currentSellGold = 0
+local currentSellCount = 0
+
+local function RefreshSellPriceDisplay()
+    ValueLabel.Text = "⏳ Đang tính toán kho đồ..."
+    task.spawn(function()
+        local gold, count, toSell = GetSelectedSellData()
+        currentSellGold = gold
+        currentSellCount = count
+        currentToSellData = toSell
+
+        if count > 0 then
+            ValueLabel.Text = string.format("💰 Có thể bán: %s Gold (%d vật phẩm)", FormatNumber(gold), count)
+            ExecuteSellBtn.BackgroundColor3 = Theme.Primary
+            ExecuteSellBtn.Text = string.format("💲 BÁN NGAY • NHẬN %s GOLD", FormatNumber(gold))
+        else
+            ValueLabel.Text = "💰 Có thể bán: 0 Gold (0 vật phẩm được chọn)"
+            ExecuteSellBtn.BackgroundColor3 = Theme.CardInner
+            ExecuteSellBtn.Text = "💲 CHƯA CÓ VẬT PHẨM NÀO ĐƯỢC CHỌN"
+        end
+    end)
+end
+
+for idx, r in ipairs(rarityToggles) do
+    local isCol1 = (idx % 2 == 1)
+    local row = math.floor((idx - 1) / 2)
+    local rBtn = Instance.new("TextButton")
+    rBtn.Size = UDim2.new(0.48, 0, 0, 32)
+    rBtn.Position = UDim2.new(isCol1 and 0.03 or 0.51, 0, 0, 78 + row * 38)
+    rBtn.BackgroundColor3 = Config[r.key] and Theme.AccentGreen or Theme.CardInner
+    rBtn.Text = (Config[r.key] and "[X] " or "[ ] ") .. r.name
+    rBtn.TextColor3 = Config[r.key] and Color3.fromRGB(255, 255, 255) or Theme.TextDesc
+    rBtn.TextSize = 10
+    rBtn.Font = Enum.Font.GothamMedium
+    rBtn.BorderSizePixel = 0
+    rBtn.Parent = SellCard
+
+    local rc = Instance.new("UICorner")
+    rc.CornerRadius = UDim.new(0, 6)
+    rc.Parent = rBtn
+
+    rBtn.MouseButton1Click:Connect(function()
+        Config[r.key] = not Config[r.key]
+        rBtn.BackgroundColor3 = Config[r.key] and Theme.AccentGreen or Theme.CardInner
+        rBtn.Text = (Config[r.key] and "[X] " or "[ ] ") .. r.name
+        rBtn.TextColor3 = Config[r.key] and Color3.fromRGB(255, 255, 255) or Theme.TextDesc
+        RefreshSellPriceDisplay()
+    end)
+end
+
+ExecuteSellBtn.MouseButton1Click:Connect(function()
+    if currentSellCount <= 0 then
+        ExecuteSellBtn.Text = "⚠️ Chưa có vật phẩm nào thuộc độ hiếm này!"
+        task.wait(1.5)
+        RefreshSellPriceDisplay()
+        return
+    end
+
+    local goldToEarn = currentSellGold
+    local countSold = currentSellCount
+    ExecuteSellBtn.Text = "⏳ Đang bán " .. countSold .. " vật phẩm..."
+
+    pcall(function()
+        if Remotes:FindFirstChild("sellItemEvent") then
+            Remotes.sellItemEvent:FireServer(currentToSellData)
+        end
+    end)
+
+    task.wait(0.6)
+    ExecuteSellBtn.Text = string.format("✅ ĐÃ BÁN THÀNH CÔNG! +%s GOLD", FormatNumber(goldToEarn))
+    task.wait(1.5)
+    RefreshSellPriceDisplay()
+end)
+
+-- ==================== TAB 4: CHỌN MAP & MODE & REQ LVL ==================== --
+local MapCard = createCard(PageDungeon, 340)
+local MapTitle = Instance.new("TextLabel")
+MapTitle.Size = UDim2.new(1, -20, 0, 20)
+MapTitle.Position = UDim2.new(0, 12, 0, 8)
+MapTitle.BackgroundTransparency = 1
+MapTitle.Text = "🗺️ Chọn Map, Chế Độ Mode & Độ Khó (Kèm Level Req):"
+MapTitle.TextColor3 = Theme.Primary
+MapTitle.TextSize = 12
+MapTitle.Font = Enum.Font.GothamBold
+MapTitle.TextXAlignment = Enum.TextXAlignment.Left
+MapTitle.Parent = MapCard
+
+local MapDisplay = Instance.new("TextLabel")
+MapDisplay.Size = UDim2.new(1, -24, 0, 28)
+MapDisplay.Position = UDim2.new(0, 12, 0, 32)
+MapDisplay.BackgroundColor3 = Theme.CardInner
+MapDisplay.Text = string.format("Đang chọn: %s | %s (Lvl Req: %d) | %s", Config.SelectedMap, Config.SelectedDifficulty, Config.SelectedLevelReq, Config.IsHardcore and "Hardcore" or "Normal")
+MapDisplay.TextColor3 = Theme.TextTitle
+MapDisplay.TextSize = 11
+MapDisplay.Font = Enum.Font.GothamBold
+MapDisplay.BorderSizePixel = 0
+MapDisplay.Parent = MapCard
+
+local MdCorner = Instance.new("UICorner")
+MdCorner.CornerRadius = UDim.new(0, 6)
+MdCorner.Parent = MapDisplay
+
+local MapScroll = Instance.new("ScrollingFrame")
+MapScroll.Size = UDim2.new(1, -24, 0, 105)
+MapScroll.Position = UDim2.new(0, 12, 0, 66)
+MapScroll.BackgroundColor3 = Theme.CardInner
+MapScroll.BorderSizePixel = 0
+MapScroll.ScrollBarThickness = 3
+MapScroll.CanvasSize = UDim2.new(0, 0, 0, 220)
+MapScroll.Parent = MapCard
+
+local MsCorner = Instance.new("UICorner")
+MsCorner.CornerRadius = UDim.new(0, 6)
+MsCorner.Parent = MapScroll
+
+local MapGrid = Instance.new("UIGridLayout")
+MapGrid.CellSize = UDim2.new(0.48, 0, 0, 26)
+MapGrid.CellPadding = UDim2.new(0.02, 0, 0, 4)
+MapGrid.Parent = MapScroll
+
+local ModeContainer = Instance.new("Frame")
+ModeContainer.Size = UDim2.new(1, -24, 0, 32)
+ModeContainer.Position = UDim2.new(0, 12, 0, 178)
+ModeContainer.BackgroundTransparency = 1
+ModeContainer.Parent = MapCard
+
+local NormalModeBtn = Instance.new("TextButton")
+NormalModeBtn.Size = UDim2.new(0.48, 0, 1, 0)
+NormalModeBtn.Position = UDim2.new(0, 0, 0, 0)
+NormalModeBtn.BackgroundColor3 = (not Config.IsHardcore) and Theme.Primary or Theme.CardInner
+NormalModeBtn.Text = "🛡️ Mode: Normal (Thường)"
+NormalModeBtn.TextColor3 = (not Config.IsHardcore) and Color3.fromRGB(35, 25, 15) or Theme.TextDesc
+NormalModeBtn.TextSize = 10
+NormalModeBtn.Font = Enum.Font.GothamBold
+NormalModeBtn.BorderSizePixel = 0
+NormalModeBtn.Parent = ModeContainer
+
+local NmCorner = Instance.new("UICorner")
+NmCorner.CornerRadius = UDim.new(0, 6)
+NmCorner.Parent = NormalModeBtn
+
+local HardcoreModeBtn = Instance.new("TextButton")
+HardcoreModeBtn.Size = UDim2.new(0.48, 0, 1, 0)
+HardcoreModeBtn.Position = UDim2.new(0.52, 0, 0, 0)
+HardcoreModeBtn.BackgroundColor3 = Config.IsHardcore and Theme.AccentRed or Theme.CardInner
+HardcoreModeBtn.Text = "💀 Mode: Hardcore (1 Mạng)"
+HardcoreModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+HardcoreModeBtn.TextSize = 10
+HardcoreModeBtn.Font = Enum.Font.GothamBold
+HardcoreModeBtn.BorderSizePixel = 0
+HardcoreModeBtn.Parent = ModeContainer
+
+local HcCorner = Instance.new("UICorner")
+HcCorner.CornerRadius = UDim.new(0, 6)
+HcCorner.Parent = HardcoreModeBtn
+
+local DiffContainer = Instance.new("Frame")
+DiffContainer.Size = UDim2.new(1, -24, 0, 38)
+DiffContainer.Position = UDim2.new(0, 12, 0, 218)
+DiffContainer.BackgroundTransparency = 1
+DiffContainer.Parent = MapCard
+
+local DiffLayout = Instance.new("UIListLayout")
+DiffLayout.FillDirection = Enum.FillDirection.Horizontal
+DiffLayout.Padding = UDim.new(0, 4)
+DiffLayout.Parent = DiffContainer
+
+local function UpdateDisplayHeader()
+    MapDisplay.Text = string.format("Đang chọn: %s | %s (Lvl Req: %d) | %s", Config.SelectedMap, Config.SelectedDifficulty, Config.SelectedLevelReq, Config.IsHardcore and "Hardcore" or "Normal")
+end
+
+NormalModeBtn.MouseButton1Click:Connect(function()
+    Config.IsHardcore = false
+    NormalModeBtn.BackgroundColor3 = Theme.Primary
+    NormalModeBtn.TextColor3 = Color3.fromRGB(35, 25, 15)
+    HardcoreModeBtn.BackgroundColor3 = Theme.CardInner
+    HardcoreModeBtn.TextColor3 = Theme.TextDesc
+    UpdateDisplayHeader()
+end)
+
+HardcoreModeBtn.MouseButton1Click:Connect(function()
+    Config.IsHardcore = true
+    HardcoreModeBtn.BackgroundColor3 = Theme.AccentRed
+    HardcoreModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    NormalModeBtn.BackgroundColor3 = Theme.CardInner
+    NormalModeBtn.TextColor3 = Theme.TextDesc
+    UpdateDisplayHeader()
+end)
+
+local function RenderDifficultyButtons(mapName)
+    for _, child in ipairs(DiffContainer:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+
+    local diffList = MapDifficultyDatabase[mapName] or {
+        {name = "Easy", lvl = 1}, {name = "Medium", lvl = 6}, {name = "Hard", lvl = 12}, {name = "Insane", lvl = 20}, {name = "Nightmare", lvl = 27}
+    }
+
+    local foundSelected = false
+    for _, dInfo in ipairs(diffList) do
+        if dInfo.name == Config.SelectedDifficulty then
+            Config.SelectedLevelReq = dInfo.lvl
+            foundSelected = true
+            break
+        end
+    end
+    if not foundSelected then
+        Config.SelectedDifficulty = diffList[1].name
+        Config.SelectedLevelReq = diffList[1].lvl
+    end
+    UpdateDisplayHeader()
+
+    local btnWidth = math.floor((460 - 24 - (#diffList - 1) * 4) / #diffList)
+    for _, dInfo in ipairs(diffList) do
+        local dBtn = Instance.new("TextButton")
+        dBtn.Size = UDim2.new(0, btnWidth, 1, 0)
+        dBtn.BackgroundColor3 = (Config.SelectedDifficulty == dInfo.name) and Theme.Primary or Theme.CardInner
+        dBtn.Text = string.format("%s\n(Lv %d)", dInfo.name, dInfo.lvl)
+        dBtn.TextColor3 = (Config.SelectedDifficulty == dInfo.name) and Color3.fromRGB(35, 25, 15) or Theme.TextDesc
+        dBtn.TextSize = 9
+        dBtn.Font = Enum.Font.GothamBold
+        dBtn.BorderSizePixel = 0
+        dBtn.Parent = DiffContainer
+
+        local dc = Instance.new("UICorner")
+        dc.CornerRadius = UDim.new(0, 6)
+        dc.Parent = dBtn
+
+        dBtn.MouseButton1Click:Connect(function()
+            Config.SelectedDifficulty = dInfo.name
+            Config.SelectedLevelReq = dInfo.lvl
+            UpdateDisplayHeader()
+            for _, b in ipairs(DiffContainer:GetChildren()) do
+                if b:IsA("TextButton") then
+                    local isThis = b.Text:find(dInfo.name) ~= nil
+                    b.BackgroundColor3 = isThis and Theme.Primary or Theme.CardInner
+                    b.TextColor3 = isThis and Color3.fromRGB(35, 25, 15) or Theme.TextDesc
+                end
+            end
+        end)
+    end
+end
+
+for _, mapName in ipairs(MapListOrdered) do
+    local mBtn = Instance.new("TextButton")
+    mBtn.BackgroundColor3 = (Config.SelectedMap == mapName) and Theme.Primary or Theme.CardInner
+    mBtn.Text = mapName
+    mBtn.TextColor3 = (Config.SelectedMap == mapName) and Color3.fromRGB(35, 25, 15) or Theme.TextDesc
+    mBtn.TextSize = 10
+    mBtn.Font = Enum.Font.GothamMedium
+    mBtn.BorderSizePixel = 0
+    mBtn.Parent = MapScroll
+
+    local mc = Instance.new("UICorner")
+    mc.CornerRadius = UDim.new(0, 6)
+    mc.Parent = mBtn
+
+    mBtn.MouseButton1Click:Connect(function()
+        Config.SelectedMap = mapName
+        for _, b in ipairs(MapScroll:GetChildren()) do
+            if b:IsA("TextButton") then
+                b.BackgroundColor3 = (b.Text == mapName) and Theme.Primary or Theme.CardInner
+                b.TextColor3 = (b.Text == mapName) and Color3.fromRGB(35, 25, 15) or Theme.TextDesc
+            end
+        end
+        RenderDifficultyButtons(mapName)
+    end)
+end
+
+RenderDifficultyButtons("Desert Temple")
+
+local CreateLobbyBtn = Instance.new("TextButton")
+CreateLobbyBtn.Size = UDim2.new(1, -24, 0, 42)
+CreateLobbyBtn.Position = UDim2.new(0, 12, 0, 280)
+CreateLobbyBtn.BackgroundColor3 = Theme.Primary
+CreateLobbyBtn.Text = "🚀 TẠO PHÒNG & VÀO TRẬN NGAY"
+CreateLobbyBtn.TextColor3 = Color3.fromRGB(35, 25, 15)
+CreateLobbyBtn.TextSize = 12
+CreateLobbyBtn.Font = Enum.Font.GothamBold
+CreateLobbyBtn.BorderSizePixel = 0
+CreateLobbyBtn.Parent = MapCard
+
+local ClCorner = Instance.new("UICorner")
+ClCorner.CornerRadius = UDim.new(0, 8)
+ClCorner.Parent = CreateLobbyBtn
+
+CreateLobbyBtn.MouseButton1Click:Connect(function()
+    CreateLobbyBtn.Text = "⏳ Đang tạo phòng hầm ngục..."
+    pcall(function()
+        if Remotes:FindFirstChild("createLobby") then
+            local ok = Remotes.createLobby:InvokeServer(
+                Config.SelectedMap,
+                Config.SelectedDifficulty,
+                Config.SelectedLevelReq,
+                Config.IsHardcore,
+                true,
+                false
+            )
+            if ok and Remotes:FindFirstChild("startDungeon") then
+                task.wait(0.5)
+                Remotes.startDungeon:FireServer()
+            end
+        end
+    end)
+    task.wait(1.5)
+    CreateLobbyBtn.Text = "🚀 TẠO PHÒNG & VÀO TRẬN NGAY"
+end)
+
+-- ==================== TAB 5: CÀI ĐẶT, LƯU CONFIG & WEBHOOK ==================== --
+local WebhookCard = createCard(PageSettings, 230)
+local WhTitle = Instance.new("TextLabel")
+WhTitle.Size = UDim2.new(1, -20, 0, 20)
+WhTitle.Position = UDim2.new(0, 10, 0, 6)
+WhTitle.BackgroundTransparency = 1
+WhTitle.Text = "📢 Discord Webhook & Lưu Config Toàn Bộ:"
+WhTitle.TextColor3 = Theme.Primary
+WhTitle.TextSize = 12
+WhTitle.Font = Enum.Font.GothamBold
+WhTitle.TextXAlignment = Enum.TextXAlignment.Left
+WhTitle.Parent = WebhookCard
+
+local WebhookInput = Instance.new("TextBox")
+WebhookInput.Size = UDim2.new(1, -20, 0, 34)
+WebhookInput.Position = UDim2.new(0, 10, 0, 28)
+WebhookInput.BackgroundColor3 = Color3.fromRGB(28, 22, 16)
+WebhookInput.Text = Config.WebhookUrl
+WebhookInput.PlaceholderText = "Dán link Discord Webhook của bạn vào đây..."
+WebhookInput.PlaceholderColor3 = Theme.TextMuted
+WebhookInput.TextColor3 = Theme.TextTitle
+WebhookInput.TextSize = 10
+WebhookInput.Font = Enum.Font.GothamMedium
+WebhookInput.ClearTextOnFocus = false
+WebhookInput.Parent = WebhookCard
+
+local WhInCorner = Instance.new("UICorner")
+WhInCorner.CornerRadius = UDim.new(0, 8)
+WhInCorner.Parent = WebhookInput
+
+local WhInStroke = Instance.new("UIStroke")
+WhInStroke.Color = Theme.CardInner
+WhInStroke.Thickness = 1
+WhInStroke.Parent = WebhookInput
+
+local TagInput = Instance.new("TextBox")
+TagInput.Size = UDim2.new(1, -20, 0, 34)
+TagInput.Position = UDim2.new(0, 10, 0, 68)
+TagInput.BackgroundColor3 = Color3.fromRGB(28, 22, 16)
+TagInput.Text = Config.DiscordUserId
+TagInput.PlaceholderText = "Nhập Discord User ID của bạn (để Tag khi ra Legendary)..."
+TagInput.PlaceholderColor3 = Theme.TextMuted
+TagInput.TextColor3 = Theme.Primary
+TagInput.TextSize = 10
+TagInput.Font = Enum.Font.GothamMedium
+TagInput.ClearTextOnFocus = false
+TagInput.Parent = WebhookCard
+
+local TagInCorner = Instance.new("UICorner")
+TagInCorner.CornerRadius = UDim.new(0, 8)
+TagInCorner.Parent = TagInput
+
+local TagInStroke = Instance.new("UIStroke")
+TagInStroke.Color = Theme.CardInner
+TagInStroke.Thickness = 1
+TagInStroke.Parent = TagInput
+
+local SaveAllBtn = Instance.new("TextButton")
+SaveAllBtn.Size = UDim2.new(0.48, 0, 0, 36)
+SaveAllBtn.Position = UDim2.new(0, 10, 0, 110)
+SaveAllBtn.BackgroundColor3 = Theme.Primary
+SaveAllBtn.Text = "💾 LƯU TOÀN BỘ CONFIG"
+SaveAllBtn.TextColor3 = Color3.fromRGB(35, 25, 15)
+SaveAllBtn.TextSize = 11
+SaveAllBtn.Font = Enum.Font.GothamBold
+SaveAllBtn.BorderSizePixel = 0
+SaveAllBtn.Parent = WebhookCard
+
+local SvCorner = Instance.new("UICorner")
+SvCorner.CornerRadius = UDim.new(0, 8)
+SvCorner.Parent = SaveAllBtn
+
+local TestWhBtn = Instance.new("TextButton")
+TestWhBtn.Size = UDim2.new(0.48, 0, 0, 36)
+TestWhBtn.Position = UDim2.new(0.52, 0, 0, 110)
+TestWhBtn.BackgroundColor3 = Theme.AccentPeach
+TestWhBtn.Text = "🧪 TEST GỬI WEBHOOK"
+TestWhBtn.TextColor3 = Color3.fromRGB(35, 25, 15)
+TestWhBtn.TextSize = 11
+TestWhBtn.Font = Enum.Font.GothamBold
+TestWhBtn.BorderSizePixel = 0
+TestWhBtn.Parent = WebhookCard
+
+local TsCorner = Instance.new("UICorner")
+TsCorner.CornerRadius = UDim.new(0, 8)
+TsCorner.Parent = TestWhBtn
+
+local WhStatus = Instance.new("TextLabel")
+WhStatus.Size = UDim2.new(1, -20, 0, 65)
+WhStatus.Position = UDim2.new(0, 10, 0, 155)
+WhStatus.BackgroundTransparency = 1
+WhStatus.Text = (Config.WebhookUrl ~= "") and "Trạng thái: Đã có link Webhook. Bấm Lưu để lưu vĩnh viễn vào máy." or "Trạng thái: Chưa có link Webhook. Vui lòng dán link của bạn vào ô trên."
+WhStatus.TextColor3 = (Config.WebhookUrl ~= "") and Theme.AccentGreen or Theme.AccentPeach
+WhStatus.TextSize = 10
+WhStatus.Font = Enum.Font.GothamMedium
+WhStatus.TextWrapped = true
+WhStatus.TextXAlignment = Enum.TextXAlignment.Left
+WhStatus.Parent = WebhookCard
+
+SaveAllBtn.MouseButton1Click:Connect(function()
+    Config.WebhookUrl = WebhookInput.Text
+    Config.DiscordUserId = TagInput.Text
+    local ok = SaveAllConfigToFile()
+    if ok then
+        WhStatus.Text = "✅ ĐÃ LƯU TOÀN BỘ CONFIG VÀO MÁY! Lần sau vào game sẽ tự động nhớ mọi cài đặt."
+        WhStatus.TextColor3 = Theme.AccentGreen
+    else
+        WhStatus.Text = "⚠️ Đã lưu cấu hình trong phiên chơi hiện tại."
+    end
+end)
+
+TestWhBtn.MouseButton1Click:Connect(function()
+    Config.WebhookUrl = WebhookInput.Text
+    Config.DiscordUserId = TagInput.Text
+    if Config.WebhookUrl == "" or not Config.WebhookUrl:find("http") then
+        WhStatus.Text = "⚠️ Vui lòng dán link Discord Webhook hợp lệ vào ô trên trước khi Test!"
+        WhStatus.TextColor3 = Theme.AccentRed
+        return
+    end
+
+    WhStatus.Text = "⏳ Đang gửi tin nhắn thử nghiệm tới Discord..."
+    SendRewardEmbedWebhook({
+        gold = 1380000,
+        gems = 150,
+        items = {
+            {name = "Pirate King's Cutlass", rarity = "legendary"},
+            {name = "Pirate King's Mage Robes", rarity = "uncommon"}
+        }
+    })
+    WhStatus.Text = "✅ Đã gửi Webhook thử nghiệm thành công! Kiểm tra Discord của bạn ngay."
+    WhStatus.TextColor3 = Theme.AccentGreen
+end)
+
+local isVisible = true
+CloseBtn.MouseButton1Click:Connect(function()
+    isVisible = false
+    MainFrame.Visible = false
+end)
+FloatBtn.MouseButton1Click:Connect(function()
+    isVisible = not isVisible
+    MainFrame.Visible = isVisible
+end)
+
+-- ======================================================================
+-- 13. BỘ ĐIỀU KHIỂN CHUYỂN ĐỘNG VẬT LÝ, CHỐNG KẸT & CHIẾN ĐẤU
+-- ======================================================================
+local currentTargetEnemy = nil
+local strafeTick = 0
+
+local lastRecordedPos = nil
+local lastProgressCheck = tick()
+local stuckDuration = 0
+
+RunService.RenderStepped:Connect(function()
+    if not Config.AutoFarm then return end
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum or hum.Health <= 0 or not hrp then return end
+
+    if activeMoveDir ~= Vector3.zero then
+        if CheckStepOrLowObstacle(hrp, activeMoveDir) then
+            hum.Jump = true
+        end
+        hum:Move(activeMoveDir, false)
+    end
+end)
+
+-- Vòng lặp chính quản lý trạng thái Farm, Né Chiêu Đỏ, Di Chuyển & Đánh
+task.spawn(function()
+    while true do
+        task.wait(0.04)
+
+        if Config.AutoFarm and (workspace:FindFirstChild("dungeon") or workspace:FindFirstChild("enemies")) then
+            pcall(function()
+                local char = LocalPlayer.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if not hrp or not hum or hum.Health <= 0 then return end
+
+                AutoCheckStartAndReplay()
+
+                -- 1. TÌM QUÁI MỤC TIÊU THEO TRÌNH TỰ TỪNG PHÒNG (BÃI NÀO RA BÃI ĐÓ)
+                if not currentTargetEnemy or not currentTargetEnemy.hum or currentTargetEnemy.hum.Health <= 0 or not currentTargetEnemy.part:IsDescendantOf(workspace) then
+                    local target, roomName = GetSequentialTargetEnemy()
+                    currentTargetEnemy = target
+                end
+
+                local target = currentTargetEnemy
+                if not target then
+                    activeMoveDir = Vector3.zero
+                    RoomStatusLabel.Text = "📍 Tiến độ: " .. currentActiveRoomName
+                    return
+                end
+
+                RoomStatusLabel.Text = string.format("📍 Đang farm: %s | Quái: %s", currentActiveRoomName, target.model.Name)
+
+                local mobPos = target.part.Position
+                local playerPos = hrp.Position
+                local diff = mobPos - playerPos
+                local horizDiff = Vector3.new(diff.X, 0, diff.Z)
+                local dist = horizDiff.Magnitude
+
+                local isRealBoss = CheckIsRealBoss(target.model, currentActiveRoomName)
+
+                -- 2. ƯU TIÊN SỐ 1: KIỂM TRA XEM CÓ ĐANG ĐỨNG TRONG VÙNG ĐỎ CỦA CHIÊU THỨC KHÔNG!
+                --    (NÉ CHUẨN XÁC NHƯ VIDEO: BƯỚC RA KHỎI PHẠM VI MÀU ĐỎ ĐỂ ĐỨNG VÀO KHE AN TOÀN)
+                local redDodgeDir = GetRedTelegraphDodgeVector(playerPos)
+
+                if redDodgeDir then
+                    -- Đang dính trong vùng đỏ -> Lập tức bước ra ngoài vùng đỏ theo đường ngắn nhất!
+                    activeMoveDir = redDodgeDir
+                    hum.Jump = true
+
+                    -- Nếu đang ở gần mục tiêu hoặc đánh boss thì vẫn vừa né vừa xả đòn
+                    if dist <= 45 or isRealBoss then
+                        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(mobPos.X, hrp.Position.Y, mobPos.Z))
+                        ExecuteCombatActions()
+                    end
+                    return
+                end
+
+                -- 3. GIÁM SÁT CHỐNG KẸT (ANTI-STUCK WATCHDOG)
+                local now = tick()
+                if now - lastProgressCheck > 0.35 then
+                    if lastRecordedPos and activeMoveDir.Magnitude > 0.1 then
+                        local moved = (hrp.Position - lastRecordedPos).Magnitude
+                        if moved < 0.45 then
+                            stuckDuration = stuckDuration + 0.35
+                            hum.Jump = true
+                            cachedWaypoints = nil
+
+                            if isRealBoss and dist <= 55 then
+                                stuckDuration = 0
+                            elseif stuckDuration >= 1.0 then
+                                activeMoveDir = -activeMoveDir
+                                task.wait(0.12)
+                                stuckDuration = 0
+                            end
+                        else
+                            stuckDuration = 0
+                        end
+                    else
+                        stuckDuration = 0
+                    end
+                    lastRecordedPos = hrp.Position
+                    lastProgressCheck = now
+                end
+
+                -- 4. KHI KHÔNG CÓ CHIÊU ĐỎ (HOẶC ĐÃ Ở TRONG KHE AN TOÀN):
+                -- ==================== TRƯỜNG HỢP A: QUÁI THƯỜNG ==================== --
+                if not isRealBoss then
+                    -- Quái thường ở xa (> 7 studs): CHẠY THẲNG TỚI QUÁI, KHÔNG ĐÁNH BỪA BÃI
+                    if dist > Config.CombatDistance then
+                        local dir, jump = GetSmartNavDirection(playerPos, mobPos)
+                        activeMoveDir = dir
+                        if jump then hum.Jump = true end
+                    else
+                        -- ĐÃ TỚI SÁT QUÁI (<= 7 studs) -> QUAY MẶT VÀO QUÁI & BẮT ĐẦU CHÉM KIẾM + SÀI SKILL Q, E!
+                        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(mobPos.X, hrp.Position.Y, mobPos.Z))
+
+                        strafeTick = strafeTick + 0.12
+                        local mobRight = target.part.CFrame.RightVector
+                        local strafeSide = (math.sin(strafeTick * 2.5) > 0) and 1 or -1
+                        local strafeVector = (mobRight * strafeSide * 0.85)
+
+                        local forwardBias = Vector3.zero
+                        if dist > (Config.CombatDistance - 1) then
+                            forwardBias = horizDiff.Unit * 0.4
+                        elseif dist < (Config.CombatDistance - 3) then
+                            forwardBias = -horizDiff.Unit * 0.4
+                        end
+
+                        activeMoveDir = (strafeVector + forwardBias).Unit
+                        ExecuteCombatActions()
+                    end
+
+                -- ==================== TRƯỜNG HỢP B: ĐÁNH BOSS ==================== --
+                else
+                    local reachedBoss = false
+
+                    if dist <= 12 then
+                        reachedBoss = true
+                    elseif dist <= Config.BossDistance and (stuckDuration > 0 or not CheckStepOrLowObstacle(hrp, horizDiff.Unit)) then
+                        reachedBoss = true
+                    end
+
+                    if not reachedBoss and dist > 14 then
+                        -- Chưa tới boss -> Chạy thẳng tới Boss / Mép sàn
+                        local dir, jump = GetSmartNavDirection(playerPos, mobPos)
+                        activeMoveDir = dir
+                        if jump then hum.Jump = true end
+                    else
+                        -- ĐÃ TỚI BOSS HOẶC MÉP SÀN TRƯỚC MẶT BOSS:
+                        -- 1. Luôn khoá mặt nhìn thẳng vào Boss
+                        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(mobPos.X, hrp.Position.Y, mobPos.Z))
+
+                        -- 2. LIÊN TỤC SPAM AUTO SKILL Q & E + AUTO CHÉM KIẾM
+                        ExecuteCombatActions()
+
+                        -- 3. Di chuyển dạt nhẹ giữ thăng bằng (khi không có chiêu đỏ)
+                        strafeTick = strafeTick + 0.12
+                        local mobRight = target.part.CFrame.RightVector
+                        local strafeSide = (math.sin(strafeTick * 2.5) > 0) and 1 or -1
+                        activeMoveDir = (mobRight * strafeSide * 0.6).Unit
+                    end
+                end
+            end)
+        else
+            activeMoveDir = Vector3.zero
+        end
+    end
+end)
+
+-- Vòng lặp cập nhật ESP Quái, Tự chia Stats, và Nhận Thưởng
+task.spawn(function()
+    while true do
+        task.wait(1.0)
+        UpdateMobESP()
+        AutoUpgradeStats()
+        AutoCheckStartAndReplay()
+    end
+end)
+
+print("[CatHubMasterV21] Loaded successfully! True 3D Red Telegraph Escape to Safe Spot + Boss Spam active.")
