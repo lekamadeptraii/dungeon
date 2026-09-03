@@ -52,6 +52,7 @@ local Config = {
     MobESP = false,
     AutoStart = false,
     AutoReplay = false,
+    TargetLevel = 0,               -- Target Level to Leave Lobby (0 = loop indefinitely)
 
     -- Room / Lobby Features
     AutoAcceptJoin = true,         -- Auto Accept Join Requests to Room
@@ -340,25 +341,73 @@ if Remotes:FindFirstChild("cloneRewardGui") then
 end
 
 -- ======================================================================
--- AUTO ACCEPT JOIN REQUESTS TO ROOM
+-- AUTO ACCEPT ALL JOIN REQUESTS TO ROOM (TỰ ĐỘNG CHẤP NHẬN HÀNG LOẠT)
 -- ======================================================================
+local function ProcessAllPendingJoinRequests()
+    if not Config.AutoAcceptJoin then return end
+    pcall(function()
+        for _, g in ipairs(PlayerGui:GetChildren()) do
+            if g:IsA("ScreenGui") and (g.Name:find("joinRequestConfirm") or g.Name:find("JoinRequest")) then
+                local reqIdStr = g.Name:match("joinRequestConfirm_(%d+)")
+                local reqId = tonumber(reqIdStr)
+
+                if reqId and Remotes:FindFirstChild("respondJoinRequest") then
+                    Remotes.respondJoinRequest:FireServer(reqId, true)
+                end
+
+                -- Tìm nút confirm (Accept) trong bảng xác nhận
+                for _, b in ipairs(g:GetDescendants()) do
+                    if b:IsA("GuiButton") then
+                        local pName = b.Parent and b.Parent.Name:lower() or ""
+                        local bName = b.Name:lower()
+                        local bText = (b:IsA("TextButton") and b.Text or ""):lower()
+
+                        if pName:find("confirm") or bName:find("confirm") or bName:find("accept") or bText:find("yes") or bText:find("accept") then
+                            if firesignal then
+                                firesignal(b.MouseButton1Down)
+                                firesignal(b.MouseButton1Click)
+                            end
+                        end
+                    end
+                end
+
+                -- Dọn sạch popup đã chấp nhận khỏi màn hình
+                task.delay(0.12, function()
+                    pcall(function() g:Destroy() end)
+                end)
+            end
+        end
+    end)
+end
+
 if Remotes:FindFirstChild("showJoinRequest") and Remotes:FindFirstChild("respondJoinRequest") then
     local conn = Remotes.showJoinRequest.OnClientEvent:Connect(function(requestId, playerName, action, level)
         if Config.AutoAcceptJoin and action ~= "close" and requestId ~= nil then
-            task.wait(0.08)
-            pcall(function()
-                Remotes.respondJoinRequest:FireServer(requestId, true)
-            end)
-            task.delay(0.2, function()
+            -- Chấp nhận ngay lập tức qua RemoteEvent
+            task.spawn(function()
                 pcall(function()
-                    local pGui = PlayerGui:FindFirstChild("joinRequestConfirm_" .. tostring(requestId))
-                    if pGui then pGui:Destroy() end
+                    Remotes.respondJoinRequest:FireServer(requestId, true)
                 end)
+            end)
+
+            -- Xử lý đồng thời GUI nếu đã sinh ra
+            task.delay(0.05, function()
+                ProcessAllPendingJoinRequests()
             end)
         end
     end)
     table.insert(_G._CatHubConns, conn)
 end
+
+-- Vòng lặp quét liên tục quét sạch toàn bộ yêu cầu xin vào (kể cả khi 3-4 người bấm cùng lúc)
+task.spawn(function()
+    while true do
+        task.wait(0.15)
+        if Config.AutoAcceptJoin then
+            ProcessAllPendingJoinRequests()
+        end
+    end
+end)
 
 -- ======================================================================
 -- LOBBY PLAYER COUNT & AUTO START WHEN FULL
@@ -453,62 +502,187 @@ local function CheckAutoStartWhenFull()
 end
 
 -- ======================================================================
--- AUTO START & REPLAY
+-- AUTO START & REPLAY / LEAVE TO LOBBY
 -- ======================================================================
+local winDetectedTime = 0
+
 local function AutoCheckStartAndReplay()
-    if not Config.AutoStart then return end
-    pcall(function()
-        if Remotes:FindFirstChild("changeStartValue") then Remotes.changeStartValue:FireServer() end
-        if Remotes:FindFirstChild("readyUp") then Remotes.readyUp:FireServer() end
+    -- 1. Auto Start Dungeon
+    if Config.AutoStart then
+        pcall(function()
+            if Remotes:FindFirstChild("changeStartValue") then Remotes.changeStartValue:FireServer() end
+            if Remotes:FindFirstChild("readyUp") then Remotes.readyUp:FireServer() end
+            if Remotes:FindFirstChild("startDungeon") then Remotes.startDungeon:FireServer() end
+            if Remotes:FindFirstChild("startBossRaid") then Remotes.startBossRaid:FireServer() end
 
-        local qGui = PlayerGui:FindFirstChild("queueGui") or PlayerGui:FindFirstChild("bossQueueGui")
-        if qGui and qGui:FindFirstChild("lobbyInfo", true) then
-            local sb = qGui:FindFirstChild("startButton", true)
-            if sb and sb:IsA("GuiButton") and sb.Visible then
-                if Remotes:FindFirstChild("startDungeon") then Remotes.startDungeon:FireServer() end
-                if firesignal then
-                    firesignal(sb.MouseButton1Down)
-                    firesignal(sb.MouseButton1Click)
+            local qGui = PlayerGui:FindFirstChild("queueGui") or PlayerGui:FindFirstChild("bossQueueGui")
+            if qGui and qGui:FindFirstChild("lobbyInfo", true) then
+                local sb = qGui:FindFirstChild("startButton", true)
+                if sb and sb:IsA("GuiButton") and sb.Visible then
+                    if firesignal then
+                        firesignal(sb.MouseButton1Down)
+                        firesignal(sb.MouseButton1Click)
+                    end
                 end
             end
-        end
 
-        for _, sg in ipairs(PlayerGui:GetChildren()) do
-            if sg:IsA("ScreenGui") and sg.Name ~= "CatHubMain" and sg.Enabled then
-                for _, v in ipairs(sg:GetDescendants()) do
-                    if v:IsA("GuiButton") and v.Visible then
-                        local txt = (v:IsA("TextButton") and v.Text or ""):lower()
-                        local n = v.Name:lower()
-                        if n == "startbutton" or txt == "start" or txt:find("ready") then
-                            if firesignal then
-                                firesignal(v.MouseButton1Down)
-                                firesignal(v.MouseButton1Click)
-                                firesignal(v.Activated)
+            for _, sg in ipairs(PlayerGui:GetChildren()) do
+                if sg:IsA("ScreenGui") and sg.Name ~= "CatHubMain" and sg.Enabled then
+                    for _, v in ipairs(sg:GetDescendants()) do
+                        if v:IsA("GuiButton") and v.Visible then
+                            local txt = (v:IsA("TextButton") and v.Text or ""):lower()
+                            local n = v.Name:lower()
+                            if n == "startbutton" or txt == "start" or txt:find("ready") then
+                                if firesignal then
+                                    firesignal(v.MouseButton1Down)
+                                    firesignal(v.MouseButton1Click)
+                                end
                             end
                         end
                     end
                 end
             end
-        end
+        end)
+    end
 
-        if Config.AutoReplay then
-            local repMenu = PlayerGui:FindFirstChild("BossRaidReplayMenu") or PlayerGui:FindFirstChild("replayMenu") or PlayerGui:FindFirstChild("ReplayConfirmation")
-            if repMenu then
-                for _, b in ipairs(repMenu:GetDescendants()) do
-                    if b:IsA("GuiButton") and b.Visible then
-                        local n = b.Name:lower()
-                        local t = (b:IsA("TextButton") and b.Text or ""):lower()
-                        if n:find("replay") or n:find("yes") or t:find("replay") or t:find("yes") then
-                            if firesignal then
-                                firesignal(b.MouseButton1Down)
-                                firesignal(b.MouseButton1Click)
+    -- 2. Auto Replay & Target Level Exit to Lobby (Chỉ kích hoạt khi THẮNG, HẾT QUÁI/BOSS & RƠI ĐỒ XONG)
+    if Config.AutoReplay then
+        pcall(function()
+            local isEnded = false
+
+            -- Kiểm tra cờ dungeonFinished trong Dungeon / bossRoom
+            local d = workspace:FindFirstChild("dungeon")
+            if d then
+                local br = d:FindFirstChild("bossRoom")
+                if br and br:FindFirstChild("dungeonFinished") and br.dungeonFinished.Value == true then
+                    isEnded = true
+                end
+                local df = d:FindFirstChild("dungeonFinished")
+                if df and df.Value == true then
+                    isEnded = true
+                end
+            end
+
+            if not isEnded and workspace:FindFirstChild("dungeonFinished") and workspace.dungeonFinished.Value == true then
+                isEnded = true
+            end
+
+            -- Kiểm tra GUI thông báo thắng / rơi đồ của game
+            local dClear = PlayerGui:FindFirstChild("dungeonClear")
+            if dClear and dClear.Enabled then
+                isEnded = true
+            end
+
+            local rdbGui = PlayerGui:FindFirstChild("ReplayDungeonButton")
+            if rdbGui and rdbGui:IsA("ScreenGui") and rdbGui.Enabled then
+                isEnded = true
+            end
+
+            local repConf = PlayerGui:FindFirstChild("ReplayConfirmation")
+            if repConf and repConf:IsA("ScreenGui") and repConf.Enabled then
+                isEnded = true
+            end
+
+            if isEnded then
+                if winDetectedTime == 0 then
+                    winDetectedTime = tick()
+                end
+
+                -- Chờ 3.0 giây để Boss chết hoàn toàn, hệ thống thưởng vàng, exp và rớt đồ xong xuôi
+                local elapsed = tick() - winDetectedTime
+                if elapsed < 3.0 then
+                    if RoomStatusLabel then
+                        RoomStatusLabel.Text = string.format("🎁 Thắng Dungeon! Đang nhận đồ & exp (%.1fs)...", 3.0 - elapsed)
+                    end
+                    return
+                end
+
+                local myLevel = LocalPlayer:FindFirstChild("level") and LocalPlayer.level.Value or 1
+                local targetLvl = tonumber(Config.TargetLevel) or 0
+
+                -- A. ĐÃ ĐẠT LEVEL MỤC TIÊU -> TỰ ĐỘNG THOÁT RA LOBBY (Ảnh 2 - Cửa thoát)
+                if targetLvl > 0 and myLevel >= targetLvl then
+                    if RoomStatusLabel then
+                        RoomStatusLabel.Text = string.format("🚪 Đạt Level %d/%d! Đang thoát ra Lobby...", myLevel, targetLvl)
+                    end
+
+                    if Remotes:FindFirstChild("ReturnToLobbyEvent") then
+                        Remotes.ReturnToLobbyEvent:FireServer()
+                    end
+                    if Remotes:FindFirstChild("teleToLobby") then
+                        Remotes.teleToLobby:FireServer()
+                    end
+                    if Remotes:FindFirstChild("leaveGame") then
+                        Remotes.leaveGame:FireServer()
+                    end
+
+                    -- Bấm nút Return To Lobby trên giao diện
+                    for _, g in ipairs(PlayerGui:GetChildren()) do
+                        if g:IsA("ScreenGui") and g.Name ~= "CatHubMain" and g.Enabled then
+                            for _, b in ipairs(g:GetDescendants()) do
+                                if b:IsA("GuiButton") and b.Visible then
+                                    local bn = b.Name:lower()
+                                    if bn:find("returntolobby") or bn:find("leave") or bn:find("lobby") or bn:find("exit") then
+                                        if firesignal then
+                                            firesignal(b.MouseButton1Down)
+                                            firesignal(b.MouseButton1Click)
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                else
+                    -- B. CHƯA ĐẠT LEVEL MỤC TIÊU -> TỰ ĐỘNG BẤM REPLAY ĐỂ CHƠI TIẾP (Ảnh 1 - Mũi tên xoay)
+                    if RoomStatusLabel then
+                        RoomStatusLabel.Text = "🔄 Thắng Dungeon & nhận đồ xong! Đang Replay..."
+                    end
+
+                    if Remotes:FindFirstChild("replayDungeon") then
+                        Remotes.replayDungeon:FireServer()
+                    end
+
+                    -- 1. Bấm nút Replay trong ScreenGui ReplayDungeonButton
+                    if rdbGui and rdbGui:IsA("ScreenGui") then
+                        local repBtn = rdbGui:FindFirstChild("Replay") or rdbGui:FindFirstChildWhichIsA("GuiButton", true)
+                        if repBtn and firesignal then
+                            firesignal(repBtn.MouseButton1Down)
+                            firesignal(repBtn.MouseButton1Click)
+                        end
+                    end
+
+                    -- 2. Bấm nút Replay trên thanh optionsButton / mainInterface
+                    local mainInterface = PlayerGui:FindFirstChild("mainInterface")
+                    local optBtn = mainInterface and mainInterface:FindFirstChild("optionsButton")
+                    if optBtn then
+                        local optRep = optBtn:FindFirstChild("ReplayDungeonButton") or optBtn:FindFirstChild("replayDungeon")
+                        if optRep and optRep:IsA("GuiButton") and optRep.Visible and firesignal then
+                            firesignal(optRep.MouseButton1Down)
+                            firesignal(optRep.MouseButton1Click)
+                        end
+                    end
+
+                    -- 3. Tự động bấm YES nếu hiện popup ReplayConfirmation ("Replay Dungeon? YES / NO")
+                    if repConf and repConf:IsA("ScreenGui") and repConf.Enabled then
+                        for _, btn in ipairs(repConf:GetDescendants()) do
+                            if btn:IsA("GuiButton") and btn.Visible then
+                                local btnText = (btn:IsA("TextButton") and btn.Text or ""):lower()
+                                local btnName = btn.Name:lower()
+                                if btnText == "yes" or btnName:find("yes") or btnName:find("confirm") then
+                                    if firesignal then
+                                        firesignal(btn.MouseButton1Down)
+                                        firesignal(btn.MouseButton1Click)
+                                    end
+                                end
                             end
                         end
                     end
                 end
+            else
+                winDetectedTime = 0
             end
-        end
-    end)
+        end)
+    end
 end
 
 -- ======================================================================
@@ -566,11 +740,12 @@ local function GetSequentialTargetEnemy()
 
     if dungeon then
         local orderedRooms = GetOrderedRooms(dungeon)
+
         for _, room in ipairs(orderedRooms) do
+            local ef = room:FindFirstChild("enemyFolder") or room:FindFirstChild("enemies") or room
             local livingInThisRoom = {}
 
-            -- Scan ALL descendants of room for any living enemy
-            for _, m in ipairs(room:GetDescendants()) do
+            for _, m in ipairs(ef:GetChildren()) do
                 if m:IsA("Model") and m ~= char and not Players:GetPlayerFromCharacter(m) then
                     local eHum = m:FindFirstChildOfClass("Humanoid")
                     local ePart = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Head") or m:FindFirstChildOfClass("BasePart")
@@ -581,6 +756,7 @@ local function GetSequentialTargetEnemy()
                 end
             end
 
+            -- Nếu phòng này còn quái sống -> BÃI DUY NHẤT CẦN FARM!
             if #livingInThisRoom > 0 then
                 currentActiveRoomName = room.Name
                 table.sort(livingInThisRoom, function(a, b) return a.dist < b.dist end)
@@ -589,50 +765,27 @@ local function GetSequentialTargetEnemy()
         end
     end
 
-    -- Deep scan across all global folders (boss, enemies, mobs, waveEnemies)
-    local allLiving = {}
-    local containers = {"enemies", "boss", "mobs", "waveEnemies"}
-    for _, cName in ipairs(containers) do
-        local folder = workspace:FindFirstChild(cName)
-        if folder then
-            for _, m in ipairs(folder:GetDescendants()) do
-                if m:IsA("Model") and m ~= char and not Players:GetPlayerFromCharacter(m) then
-                    local eHum = m:FindFirstChildOfClass("Humanoid")
-                    local ePart = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Head") or m:FindFirstChildOfClass("BasePart")
-                    if eHum and eHum.Health > 0 and ePart then
-                        local d = (myPos - ePart.Position).Magnitude
-                        table.insert(allLiving, {model = m, part = ePart, hum = eHum, dist = d})
+    local enemiesFolder = workspace:FindFirstChild("enemies")
+    if enemiesFolder then
+        local best = nil
+        local minDist = math.huge
+        for _, m in ipairs(enemiesFolder:GetChildren()) do
+            if m:IsA("Model") and m ~= char and not Players:GetPlayerFromCharacter(m) then
+                local eHum = m:FindFirstChildOfClass("Humanoid")
+                local ePart = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Head") or m:FindFirstChildOfClass("BasePart")
+                if eHum and eHum.Health > 0 and ePart then
+                    local d = (myPos - ePart.Position).Magnitude
+                    if d < minDist then
+                        minDist = d
+                        best = {model = m, part = ePart, hum = eHum, dist = d}
                     end
                 end
             end
         end
-    end
-
-    if #allLiving > 0 then
-        table.sort(allLiving, function(a, b) return a.dist < b.dist end)
-        currentActiveRoomName = "Battle"
-        return allLiving[1], "Battle"
-    end
-
-    -- Direct workspace fallback for bosses or special mobs
-    for _, m in ipairs(workspace:GetChildren()) do
-        if m:IsA("Model") and m ~= char and not Players:GetPlayerFromCharacter(m) then
-            local eHum = m:FindFirstChildOfClass("Humanoid")
-            local ePart = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Head") or m:FindFirstChildOfClass("BasePart")
-            if eHum and eHum.Health > 0 and ePart then
-                local n = m.Name:lower()
-                if n:find("boss") or n:find("lord") or n:find("champion") or n:find("enemy") or n:find("monster") then
-                    local d = (myPos - ePart.Position).Magnitude
-                    table.insert(allLiving, {model = m, part = ePart, hum = eHum, dist = d})
-                end
-            end
+        if best then
+            currentActiveRoomName = "Enemies"
+            return best, "enemies"
         end
-    end
-
-    if #allLiving > 0 then
-        table.sort(allLiving, function(a, b) return a.dist < b.dist end)
-        currentActiveRoomName = "Boss Area"
-        return allLiving[1], "Boss"
     end
 
     currentActiveRoomName = "Cleared"
@@ -796,7 +949,9 @@ local function GetSmartNavDirection(playerPos, targetPos)
             AgentCanJump = true,
             WaypointSpacing = 3.2
         })
-        local ok = pcall(function() path:ComputeAsync(playerPos, targetPos) end)
+        local ok = pcall(function()
+            path:ComputeAsync(playerPos, targetPos)
+        end)
         if ok and path.Status == Enum.PathStatus.Success then
             cachedWaypoints = path:GetWaypoints()
             cachedWaypointIdx = 2
@@ -828,116 +983,94 @@ local function GetSmartNavDirection(playerPos, targetPos)
 end
 
 -- ======================================================================
--- ULTRA-SMOOTH SMART DODGE (NO JITTER, NO UNNECESSARY JUMPING)
+-- 7. HỆ THỐNG NÉ CHIÊU ĐỎ & VÙNG NGUY HIỂM THÔNG MINH (TẤT CẢ HƯỚNG & HÌNH DẠNG)
 -- ======================================================================
-local smoothedDodgeDir = Vector3.zero
-local dodgeGraceTimer = 0
-
-local function IsFromPlayer(obj)
-    -- 1. Direct descendant of any player's character
-    for _, p in ipairs(Players:GetPlayers()) do
-        local pChar = p.Character
-        if pChar and obj:IsDescendantOf(pChar) then
-            return true
-        end
-    end
-
-    -- 2. Ancestor hierarchy checks for player ownership
-    local curr = obj
-    while curr and curr ~= workspace and curr ~= game do
-        local cVal = curr:FindFirstChild("creator") or curr:FindFirstChild("owner") or curr:FindFirstChild("player") or curr:FindFirstChild("userId")
-        if cVal then
-            if cVal:IsA("ObjectValue") then
-                local v = cVal.Value
-                if v and (v:IsA("Player") or (v:IsA("Model") and Players:GetPlayerFromCharacter(v))) then
-                    return true
-                end
-            elseif cVal:IsA("StringValue") and Players:FindFirstChild(cVal.Value) then
-                return true
-            elseif cVal:IsA("IntValue") or cVal:IsA("NumberValue") then
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p.UserId == cVal.Value then return true end
-                end
-            end
-        end
-
-        if curr:IsA("Model") and Players:FindFirstChild(curr.Name) then
-            return true
-        end
-
-        curr = curr.Parent
-    end
-
-    return false
-end
-
-local function GetSmartRedDodgeVector(playerPos)
+local function GetRedTelegraphDodgeVector(playerPos)
+    if not Config.AutoDodgeRed then return nil end
+    local char = LocalPlayer.Character
     local bestDodgeDir = nil
     local minDistanceToExit = math.huge
 
     local function inspectPart(obj)
         if not obj:IsA("BasePart") then return end
-        if IsFromPlayer(obj) then return end -- Strict: NEVER dodge player abilities or teammates!
+        if char and obj:IsDescendantOf(char) then return end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Character and obj:IsDescendantOf(p.Character) then return end
+        end
+
+        local distToPlayer = (obj.Position - playerPos).Magnitude
+        if distToPlayer > 85 then return end
 
         local name = obj.Name:lower()
-        local parent = obj.Parent
-        local parentName = parent and parent.Name:lower() or ""
+        local parentName = obj.Parent and obj.Parent.Name:lower() or ""
         local isDanger = false
 
-        -- 1. Universal indicator names (ALL colors: Red, Cyan, Ice, Purple, Yellow, Orange, Green)
-        if name == "precast" or name:find("indicator") or name:find("telegraph") or name:find("iceaoe") or name:find("danger") then
+        -- 1. Nhận diện theo từ khóa chiêu thức của Boss & Quái (Tia thẳng, Vòng tròn, Nón, Sóng chấn...)
+        if name == "precast" or name:find("indicator") or name:find("telegraph") or name:find("danger") or name:find("hazard")
+           or name:find("iceaoe") or name:find("circlehit") or name:find("beam") or name:find("laser") or name:find("line")
+           or name:find("shockwave") or name:find("ring") or name:find("slam") or name:find("slash") or name:find("cone")
+           or name:find("damagezone") or name:find("strike") or name:find("hitbox") then
             isDanger = true
-        elseif parentName:find("spikes") or parentName:find("beam") or parentName:find("aoe") or parentName:find("flame") or parentName:find("laser") or parentName:find("shot") or parentName:find("projectile") then
-            if name == "hitbox" or name == "part" or name == "precast" or name:find("damage") or name:find("indicator") then
+        elseif parentName:find("spikes") or parentName:find("beam") or parentName:find("aoe") or parentName:find("flame")
+               or parentName:find("laser") or parentName:find("shot") or parentName:find("cone") or parentName:find("circle")
+               or parentName:find("strike") or parentName:find("slam") or parentName:find("line") then
+            if not obj.CanCollide or obj.Transparency > 0.05 then
                 isDanger = true
             end
         end
 
-        -- 2. Dedicated enemy projectile / hazard container check
-        if not isDanger then
-            if obj:IsDescendantOf(workspace:FindFirstChild("enemyProjectiles") or game) or
-               obj:IsDescendantOf(workspace:FindFirstChild("flameParts") or game) or
-               obj:IsDescendantOf(workspace:FindFirstChild("mageBossLaserSpawns") or game) then
+        -- 2. Nhận diện theo màu sắc cảnh báo trên sàn (Đỏ, Cam, Tím, Băng Lam, Vàng Sét)
+        if not isDanger and not obj.CanCollide and obj.Transparency < 0.98 then
+            local c = obj.Color
+            local isRed = (c.R > 0.60 and (c.R > c.G * 1.25 or c.R > c.B * 1.25))
+            local isOrange = (c.R > 0.70 and c.G > 0.30 and c.B < 0.45)
+            local isYellow = (c.R > 0.65 and c.G > 0.65 and c.B < 0.45)
+            local isPurple = (c.R > 0.45 and c.B > 0.45 and c.G < 0.40)
+            local isCyanIce = (c.B > 0.60 and c.G > 0.50 and c.R < 0.45)
+            if isRed or isOrange or isYellow or isPurple or isCyanIce then
                 isDanger = true
-            end
-        end
-
-        -- 3. Visual precast in enemy/boss models or dungeon rooms (any color: Red, Ice Blue, Void Purple, Poison Green, Electric Yellow)
-        if not isDanger and obj.Transparency < 0.98 and not obj.CanCollide then
-            local isUnderEnemyOrDungeon = false
-            if (workspace:FindFirstChild("dungeon") and obj:IsDescendantOf(workspace.dungeon)) or
-               (workspace:FindFirstChild("enemies") and obj:IsDescendantOf(workspace.enemies)) or
-               (workspace:FindFirstChild("boss") and obj:IsDescendantOf(workspace.boss)) then
-                isUnderEnemyOrDungeon = true
-            end
-
-            if isUnderEnemyOrDungeon then
-                if name == "precast" or name == "part" or name == "hitbox" or name:find("aoe") or name:find("circle") or name:find("line") or name:find("indicator") then
-                    isDanger = true
-                else
-                    -- Any distinct colored warning zone from an enemy
-                    local c = obj.Color
-                    -- Red/Orange/Pink OR Ice Blue/Cyan OR Purple/Magenta OR Yellow/Gold OR Poison Green
-                    if (c.R > 0.50) or (c.B > 0.45 and c.G > 0.40) or (c.R > 0.45 and c.B > 0.45) or (c.G > 0.55) then
-                        isDanger = true
-                    end
-                end
             end
         end
 
         if isDanger then
             local localPos = obj.CFrame:PointToObjectSpace(playerPos)
             local halfSize = obj.Size / 2
-            local margin = 4.2
+            local margin = 5.0 -- Bước dạt hẳn ra ngoài vùng nguy hiểm
 
-            local isCylinder = (obj:IsA("Part") and obj.Shape == Enum.PartType.Cylinder) or name:find("circle") or (math.abs(halfSize.X - halfSize.Z) < 1.0 and halfSize.X > 5)
+            -- Kiểm tra xem đối tượng là hình Trụ/Tròn (Cylinder / Ring / Circle)
+            local isCylinder = (obj:IsA("Part") and obj.Shape == Enum.PartType.Cylinder)
+                               or name:find("circle") or name:find("ring") or name:find("shockwave")
+                               or (math.abs(halfSize.X - halfSize.Z) < 1.5 and halfSize.X > 4)
+                               or (math.abs(halfSize.Y - halfSize.Z) < 1.5 and halfSize.Y > 4)
 
             if isCylinder then
-                local radius = math.max(halfSize.X, halfSize.Z) + margin
-                local distFromCenter = Vector2.new(localPos.X, localPos.Z).Magnitude
-                if distFromCenter <= radius and math.abs(localPos.Y) <= (halfSize.Y + 8.0) then
+                -- Tính toán tọa độ hình trụ chuẩn theo cả 3 trục (X, Y hoặc Z)
+                local dAxis, hMax, radius, distFromCenter, exitObj
+                if halfSize.X <= halfSize.Y and halfSize.X <= halfSize.Z then
+                    -- Trục X là chiều dày của Cylinder (chuẩn của Roblox)
+                    dAxis = math.abs(localPos.X)
+                    hMax = halfSize.X + 8.0
+                    radius = math.max(halfSize.Y, halfSize.Z) + margin
+                    distFromCenter = math.sqrt(localPos.Y^2 + localPos.Z^2)
+                    exitObj = (distFromCenter > 0.1) and Vector3.new(0, localPos.Y, localPos.Z).Unit or Vector3.new(0, 1, 1).Unit
+                elseif halfSize.Y <= halfSize.X and halfSize.Y <= halfSize.Z then
+                    -- Trục Y là chiều dày (nằm bẹp trên sàn)
+                    dAxis = math.abs(localPos.Y)
+                    hMax = halfSize.Y + 8.0
+                    radius = math.max(halfSize.X, halfSize.Z) + margin
+                    distFromCenter = math.sqrt(localPos.X^2 + localPos.Z^2)
+                    exitObj = (distFromCenter > 0.1) and Vector3.new(localPos.X, 0, localPos.Z).Unit or Vector3.new(1, 0, 1).Unit
+                else
+                    -- Trục Z là chiều dày
+                    dAxis = math.abs(localPos.Z)
+                    hMax = halfSize.Z + 8.0
+                    radius = math.max(halfSize.X, halfSize.Y) + margin
+                    distFromCenter = math.sqrt(localPos.X^2 + localPos.Y^2)
+                    exitObj = (distFromCenter > 0.1) and Vector3.new(localPos.X, localPos.Y, 0).Unit or Vector3.new(1, 1, 0).Unit
+                end
+
+                if dAxis <= hMax and distFromCenter <= radius then
                     local distToExit = radius - distFromCenter
-                    local exitObj = (distFromCenter > 0.1) and Vector3.new(localPos.X, 0, localPos.Z).Unit or Vector3.new(1, 0, 0)
                     local exitWorld = obj.CFrame:VectorToWorldSpace(exitObj)
                     local exitDir = Vector3.new(exitWorld.X, 0, exitWorld.Z).Unit
 
@@ -947,9 +1080,10 @@ local function GetSmartRedDodgeVector(playerPos)
                     end
                 end
             else
+                -- Vùng hình hộp chữ nhật / Tia thẳng 1 hướng (Beam / Line / Box)
                 local inX = math.abs(localPos.X) <= (halfSize.X + margin)
                 local inZ = math.abs(localPos.Z) <= (halfSize.Z + margin)
-                local inY = math.abs(localPos.Y) <= (halfSize.Y + 8.0)
+                local inY = math.abs(localPos.Y) <= (halfSize.Y + 10.0)
 
                 if inX and inZ and inY then
                     local distToExitX = (halfSize.X + margin) - math.abs(localPos.X)
@@ -958,6 +1092,7 @@ local function GetSmartRedDodgeVector(playerPos)
                     local exitVectorObject = Vector3.zero
                     local exitDist = 0
 
+                    -- Thoát ra theo hướng ngắn nhất (đặc biệt đối với tia dài 1 hướng, bước ngang ra 2 bên cực nhanh)
                     if distToExitX <= distToExitZ then
                         local signX = (localPos.X >= 0) and 1 or -1
                         exitVectorObject = Vector3.new(signX, 0, 0)
@@ -969,47 +1104,55 @@ local function GetSmartRedDodgeVector(playerPos)
                     end
 
                     local exitVectorWorld = obj.CFrame:VectorToWorldSpace(exitVectorObject)
-                    local exitDir = Vector3.new(exitVectorWorld.X, 0, exitVectorWorld.Z).Unit
+                    local exitDirHorizontal = Vector3.new(exitVectorWorld.X, 0, exitVectorWorld.Z).Unit
 
                     if exitDist < minDistanceToExit then
                         minDistanceToExit = exitDist
-                        bestDodgeDir = exitDir
+                        bestDodgeDir = exitDirHorizontal
                     end
                 end
             end
         end
     end
 
-    -- Scan enemy attack folders
-    for _, fName in ipairs({"enemyProjectiles", "flameParts", "vfxPool", "mageBossLaserSpawns", "abilities"}) do
+    -- Quét toàn bộ các thư mục chiêu thức
+    for _, fName in ipairs({"flameParts", "vfxPool", "abilities", "mageBossLaserSpawns"}) do
         local f = workspace:FindFirstChild(fName)
         if f then
             for _, o in ipairs(f:GetDescendants()) do inspectPart(o) end
         end
     end
 
-    -- Scan dungeon rooms & enemies
-    local dungeon = workspace:FindFirstChild("dungeon")
-    if dungeon then
-        for _, o in ipairs(dungeon:GetDescendants()) do
-            if o:IsA("BasePart") then inspectPart(o) end
-        end
+    -- Quét sâu vào toàn bộ Dungeon (Đặc biệt là bossRoom và các phòng quái)
+    local dg = workspace:FindFirstChild("dungeon")
+    if dg then
+        for _, o in ipairs(dg:GetDescendants()) do inspectPart(o) end
     end
 
-    local enemies = workspace:FindFirstChild("enemies") or workspace:FindFirstChild("boss")
-    if enemies then
-        for _, o in ipairs(enemies:GetDescendants()) do
-            if o:IsA("BasePart") then inspectPart(o) end
-        end
-    end
-
-    -- Scan workspace direct hazards
+    -- Quét các chiêu thức sinh ra trực tiếp ở Workspace
     for _, o in ipairs(workspace:GetChildren()) do
         if o:IsA("BasePart") then
             inspectPart(o)
         elseif o:IsA("Model") and not Players:GetPlayerFromCharacter(o) then
-            for _, sub in ipairs(o:GetChildren()) do
+            for _, sub in ipairs(o:GetDescendants()) do
                 if sub:IsA("BasePart") then inspectPart(sub) end
+            end
+        end
+    end
+
+    -- Chống đâm đầu vào tường khi né chiêu
+    if bestDodgeDir then
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+        local wallHit = workspace:Raycast(playerPos, bestDodgeDir * 3.5, rayParams)
+        if wallHit and wallHit.Instance.CanCollide then
+            local altDir = Vector3.new(-bestDodgeDir.Z, 0, bestDodgeDir.X)
+            local altHit = workspace:Raycast(playerPos, altDir * 3.5, rayParams)
+            if not altHit or not altHit.Instance.CanCollide then
+                bestDodgeDir = altDir
+            else
+                bestDodgeDir = -altDir
             end
         end
     end
@@ -1045,6 +1188,7 @@ local function CastSkillSlot(slotKey, slotIndex)
             local cd = tool:FindFirstChild("cooldown")
             if not cd or cd.Value <= 0 then
                 if tool:FindFirstChild("localEvent") then tool.localEvent:Fire() end
+                if tool:FindFirstChild("spellEvent") then tool.spellEvent:FireServer() end
                 if Remotes:FindFirstChild("abilityUsed") then
                     Remotes.abilityUsed:FireServer(slotKey, tool)
                     Remotes.abilityUsed:FireServer(slotIndex)
@@ -1074,7 +1218,7 @@ local function ExecuteBasicAttack()
 
         for _, child in ipairs(char:GetChildren()) do
             if child:IsA("Accessory") and child:FindFirstChild("Weapon") then
-                local re = child:FindFirstChildOfClass("RemoteEvent")
+                local re = child:FindFirstChildOfClass("RemoteEvent") or child:FindFirstChild("swing")
                 if re then re:FireServer() end
             end
         end
@@ -1092,7 +1236,21 @@ local function ExecuteBasicAttack()
                 end
             end
         end
+
+        local vu = game:GetService("VirtualUser")
+        if vu then
+            vu:CaptureController()
+            vu:ClickButton1(Vector2.new(999, 999))
+        end
     end)
+end
+
+local function ExecuteCombatActions()
+    ExecuteBasicAttack()
+    if Config.AutoSkillSmart or Config.SpamSkill then
+        CastSkillSlot("q", 1)
+        CastSkillSlot("e", 2)
+    end
 end
 
 -- ======================================================================
@@ -1574,7 +1732,46 @@ end)
 createToggle(PageFarm, "🔥 Auto Skill Smart", Config.AutoSkillSmart, function(v) Config.AutoSkillSmart = v end)
 createToggle(PageFarm, "⚡ Spam Skills", Config.SpamSkill, function(v) Config.SpamSkill = v end)
 createToggle(PageFarm, "👁️ Mob ESP", Config.MobESP, function(v) Config.MobESP = v end)
-createToggle(PageFarm, "▶️ Auto Start & Replay", Config.AutoStart, function(v) Config.AutoStart = v Config.AutoReplay = v end)
+createToggle(PageFarm, "▶️ Auto Start Dungeon", Config.AutoStart, function(v) Config.AutoStart = v end)
+createToggle(PageFarm, "🔄 Auto Replay Dungeon", Config.AutoReplay, function(v) Config.AutoReplay = v end)
+
+-- Target Level Card to Leave to Lobby
+local TargetLvlCard = createCard(PageFarm, 42)
+local TlTitle = Instance.new("TextLabel")
+TlTitle.Size = UDim2.new(0.65, 0, 1, 0)
+TlTitle.Position = UDim2.new(0, 12, 0, 0)
+TlTitle.BackgroundTransparency = 1
+TlTitle.Text = "🚪 Out to Lobby at Lvl (0 = Off):"
+TlTitle.TextColor3 = Theme.Primary
+TlTitle.TextSize = 11
+TlTitle.Font = Enum.Font.GothamBold
+TlTitle.TextXAlignment = Enum.TextXAlignment.Left
+TlTitle.Parent = TargetLvlCard
+
+local TlInput = Instance.new("TextBox")
+TlInput.Size = UDim2.new(0.32, -12, 0, 26)
+TlInput.Position = UDim2.new(0.68, 0, 0, 8)
+TlInput.BackgroundColor3 = Color3.fromRGB(22, 16, 12)
+TlInput.Text = tostring(Config.TargetLevel)
+TlInput.PlaceholderText = "Lvl"
+TlInput.TextColor3 = Theme.Primary
+TlInput.TextSize = 11
+TlInput.Font = Enum.Font.GothamBold
+TlInput.ClearTextOnFocus = false
+TlInput.BorderSizePixel = 0
+TlInput.Parent = TargetLvlCard
+
+local TlCorner = Instance.new("UICorner")
+TlCorner.CornerRadius = UDim.new(0, 6)
+TlCorner.Parent = TlInput
+
+TlInput.FocusLost:Connect(function()
+    local val = tonumber(TlInput.Text)
+    if val and val >= 0 then
+        Config.TargetLevel = math.floor(val)
+    end
+    TlInput.Text = tostring(Config.TargetLevel)
+end)
 -- ==================== TAB 2: EQUIPMENT & STATS ==================== --
 local BuildCard = createCard(PageEquip, 116)
 local BuildTitle = Instance.new("TextLabel")
@@ -2096,9 +2293,9 @@ local MapMinusBtn = Instance.new("TextButton")
 MapMinusBtn.Size = UDim2.new(0, 26, 1, 0)
 MapMinusBtn.Position = UDim2.new(0, 0, 0, 0)
 MapMinusBtn.BackgroundColor3 = Theme.CardInner
-MapMinusBtn.Text = "—"
+MapMinusBtn.Text = "-"
 MapMinusBtn.TextColor3 = Theme.Primary
-MapMinusBtn.TextSize = 13
+MapMinusBtn.TextSize = 14
 MapMinusBtn.Font = Enum.Font.GothamBold
 MapMinusBtn.BorderSizePixel = 0
 MapMinusBtn.Parent = MapStepContainer
@@ -2142,31 +2339,12 @@ MpbCorner.CornerRadius = UDim.new(0, 6)
 MpbCorner.Parent = MapPlusBtn
 
 local function SyncTargetPlayerCountFromMap(newVal)
-    newVal = tonumber(newVal)
-    if newVal and newVal >= 1 then
-        Config.TargetPlayerCount = math.floor(newVal)
-        TargetCountInput.Text = tostring(Config.TargetPlayerCount)
-        pcall(function()
-            if TargetInputFarm and TargetInputFarm.Text ~= tostring(Config.TargetPlayerCount) then
-                TargetInputFarm.Text = tostring(Config.TargetPlayerCount)
-            end
-        end)
-    else
-        TargetCountInput.Text = tostring(Config.TargetPlayerCount)
+    local n = tonumber(newVal)
+    if n and n >= 1 then
+        Config.TargetPlayerCount = math.floor(n)
     end
+    TargetCountInput.Text = tostring(Config.TargetPlayerCount)
 end
-
-TargetCountInput:GetPropertyChangedSignal("Text"):Connect(function()
-    local val = tonumber(TargetCountInput.Text)
-    if val and val >= 1 then
-        Config.TargetPlayerCount = math.floor(val)
-        pcall(function()
-            if TargetInputFarm and TargetInputFarm.Text ~= tostring(Config.TargetPlayerCount) then
-                TargetInputFarm.Text = tostring(Config.TargetPlayerCount)
-            end
-        end)
-    end
-end)
 
 TargetCountInput.FocusLost:Connect(function()
     SyncTargetPlayerCountFromMap(TargetCountInput.Text)
@@ -2364,6 +2542,8 @@ local strafeTick = 0
 local lastRecordedPos = nil
 local lastProgressCheck = tick()
 local stuckDuration = 0
+local lastDodgeDir = Vector3.zero
+local dodgeGraceTimer = 0
 
 -- Movement Render Pipeline
 RunService.RenderStepped:Connect(function()
@@ -2395,15 +2575,6 @@ task.spawn(function()
 
                 AutoCheckStartAndReplay()
 
-                -- Continuous basic attacks trigger constantly while AutoFarm is active
-                ExecuteBasicAttack()
-
-                -- Global Spam Skill (if enabled, spams on cooldown)
-                if Config.SpamSkill then
-                    CastSkillSlot("q", 1)
-                    CastSkillSlot("e", 2)
-                end
-
                 -- Target Sequential Enemies Room by Room
                 if not currentTargetEnemy or not currentTargetEnemy.hum or currentTargetEnemy.hum.Health <= 0 or not currentTargetEnemy.part:IsDescendantOf(workspace) then
                     local target, roomName = GetSequentialTargetEnemy()
@@ -2426,36 +2597,34 @@ task.spawn(function()
                 local dist = horizDiff.Magnitude
                 local isRealBoss = CheckIsRealBoss(target.model, currentActiveRoomName)
 
-                -- 1. INTEGRATED SMART DODGE (Smooth strafe exit, no jumping spasm)
-                local rawDodgeDir = GetSmartRedDodgeVector(playerPos)
-
+                -- 1. Né chiêu đỏ (Linh hoạt, mượt mà & thông minh với 0.28s Grace Buffer)
+                local rawDodgeDir = GetRedTelegraphDodgeVector(playerPos)
                 if rawDodgeDir then
                     dodgeGraceTimer = tick()
-                    if smoothedDodgeDir == Vector3.zero then
-                        smoothedDodgeDir = rawDodgeDir
-                    else
-                        smoothedDodgeDir = (smoothedDodgeDir:Lerp(rawDodgeDir, 0.4)).Unit
-                    end
-
-                    activeMoveDir = smoothedDodgeDir
-
-                    -- Face enemy while dodging
-                    hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(mobPos.X, hrp.Position.Y, mobPos.Z))
-
-                    if Config.AutoSkillSmart and (dist <= 45 or isRealBoss) then
-                        CastSkillSlot("q", 1)
-                        CastSkillSlot("e", 2)
-                    end
-                    return
-                elseif (tick() - dodgeGraceTimer) < 0.22 and smoothedDodgeDir ~= Vector3.zero then
-                    -- Smoothly step into safe gap
-                    activeMoveDir = smoothedDodgeDir
-                    return
-                else
-                    smoothedDodgeDir = Vector3.zero
+                    lastDodgeDir = rawDodgeDir
                 end
 
-                -- 2. Anti-Stuck Watchdog
+                if (tick() - dodgeGraceTimer) < 0.28 and lastDodgeDir ~= Vector3.zero then
+                    activeMoveDir = lastDodgeDir
+                    hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(mobPos.X, hrp.Position.Y, mobPos.Z))
+
+                    if CheckStepOrLowObstacle(hrp, lastDodgeDir) then
+                        hum.Jump = true
+                    end
+
+                    ExecuteBasicAttack()
+                    if dist <= 45 or isRealBoss then
+                        if Config.AutoSkillSmart or Config.SpamSkill then
+                            CastSkillSlot("q", 1)
+                            CastSkillSlot("e", 2)
+                        end
+                    end
+                    return
+                else
+                    lastDodgeDir = Vector3.zero
+                end
+
+                -- 2. Anti-Stuck Watchdog (v21)
                 local now = tick()
                 if now - lastProgressCheck > 0.35 then
                     if lastRecordedPos and activeMoveDir.Magnitude > 0.1 then
@@ -2481,12 +2650,23 @@ task.spawn(function()
                     lastProgressCheck = now
                 end
 
-                -- 3. MOB / BOSS NAVIGATION & SKILL ENGAGEMENT
+                -- 3. Di chuyển & tấn công quái / boss (v21)
                 if not isRealBoss then
                     if dist > Config.CombatDistance then
                         local dir, jump = GetSmartNavDirection(playerPos, mobPos)
                         activeMoveDir = dir
                         if jump then hum.Jump = true end
+
+                        -- Auto Attack when within weapon swing reach (<= 12 studs)
+                        if dist <= 12 then
+                            ExecuteBasicAttack()
+                        end
+
+                        -- Auto Skill Smart when approaching enemy group (<= 32 studs)
+                        if Config.AutoSkillSmart and dist <= 32 then
+                            CastSkillSlot("q", 1)
+                            CastSkillSlot("e", 2)
+                        end
                     else
                         hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(mobPos.X, hrp.Position.Y, mobPos.Z))
 
@@ -2503,15 +2683,13 @@ task.spawn(function()
                         end
 
                         activeMoveDir = (strafeVector + forwardBias).Unit
-
-                        if Config.AutoSkillSmart then
-                            CastSkillSlot("q", 1)
-                            CastSkillSlot("e", 2)
-                        end
+                        ExecuteCombatActions()
                     end
                 else
-                    local reachedBoss = (dist <= 14)
-                    if not reachedBoss and dist <= Config.BossDistance and (stuckDuration > 0 or not CheckStepOrLowObstacle(hrp, horizDiff.Unit)) then
+                    local reachedBoss = false
+                    if dist <= 12 then
+                        reachedBoss = true
+                    elseif dist <= Config.BossDistance and (stuckDuration > 0 or not CheckStepOrLowObstacle(hrp, horizDiff.Unit)) then
                         reachedBoss = true
                     end
 
@@ -2519,23 +2697,49 @@ task.spawn(function()
                         local dir, jump = GetSmartNavDirection(playerPos, mobPos)
                         activeMoveDir = dir
                         if jump then hum.Jump = true end
-                    else
-                        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(mobPos.X, hrp.Position.Y, mobPos.Z))
 
-                        if Config.AutoSkillSmart then
+                        if Config.AutoSkillSmart and dist <= 38 then
                             CastSkillSlot("q", 1)
                             CastSkillSlot("e", 2)
                         end
+                    else
+                        hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(mobPos.X, hrp.Position.Y, mobPos.Z))
+                        ExecuteCombatActions()
 
-                        strafeTick = strafeTick + 0.12
+                        -- Né hướng mặt thẳng của Boss: không bao giờ đứng chính diện hướng chiêu
+                        local bossLook = target.part.CFrame.LookVector
+                        local toPlayer = (Vector3.new(playerPos.X, 0, playerPos.Z) - Vector3.new(mobPos.X, 0, mobPos.Z)).Unit
+                        local frontDot = bossLook:Dot(toPlayer)
                         local mobRight = target.part.CFrame.RightVector
-                        local strafeSide = (math.sin(strafeTick * 2.5) > 0) and 1 or -1
-                        activeMoveDir = (mobRight * strafeSide * 0.6).Unit
+
+                        if frontDot > 0.30 then
+                            -- Đang ở chính diện tia đánh của Boss: dạt mạnh sang 2 bên sườn để né đường thẳng
+                            local dodgeSide = (mobRight:Dot(toPlayer) >= 0) and mobRight or -mobRight
+                            activeMoveDir = dodgeSide.Unit
+                        else
+                            -- Đã ở sườn hoặc sau lưng Boss: lướt strafe linh hoạt
+                            strafeTick = strafeTick + 0.12
+                            local strafeSide = (math.sin(strafeTick * 2.5) > 0) and 1 or -1
+                            activeMoveDir = (mobRight * strafeSide).Unit
+                        end
                     end
                 end
             end)
         else
             activeMoveDir = Vector3.zero
+        end
+    end
+end)
+
+-- Dedicated Fast Spam Skills Loop (Spams Q & E continuously on cooldown whenever enabled)
+task.spawn(function()
+    while true do
+        task.wait(0.08)
+        if Config.SpamSkill then
+            pcall(function()
+                CastSkillSlot("q", 1)
+                CastSkillSlot("e", 2)
+            end)
         end
     end
 end)
