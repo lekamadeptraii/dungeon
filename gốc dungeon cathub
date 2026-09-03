@@ -255,16 +255,19 @@ local function SendRewardEmbedWebhook(rewardData)
 
     if type(rewardData) == "table" and rewardData.items then
         for _, itm in ipairs(rewardData.items) do
-            local itmName = itm.name or (itm.template and itm.template.Name) or "Item"
+            local itmName = itm.name or (itm.template and itm.template.Name)
             local itmRarity = tostring(itm.rarity or "Common"):upper()
 
-            local icon = "⚪"
-            if itmRarity == "LEGENDARY" then icon = "🟠" hasLegendary = true
-            elseif itmRarity == "EPIC" then icon = "🟣"
-            elseif itmRarity == "RARE" then icon = "🔵"
-            elseif itmRarity == "UNCOMMON" then icon = "🟢" end
+            -- Only include actual named equipment, omit generic "Item" placeholders
+            if itmName and itmName ~= "" and itmName:lower() ~= "item" then
+                local icon = "⚪"
+                if itmRarity == "LEGENDARY" then icon = "🟠" hasLegendary = true
+                elseif itmRarity == "EPIC" then icon = "🟣"
+                elseif itmRarity == "RARE" then icon = "🔵"
+                elseif itmRarity == "UNCOMMON" then icon = "🟢" end
 
-            table.insert(itemsList, string.format("%s **[%s]** %s", icon, itmRarity, itmName))
+                table.insert(itemsList, string.format("%s **[%s]** %s", icon, itmRarity, itmName))
+            end
         end
     end
 
@@ -830,31 +833,95 @@ end
 local smoothedDodgeDir = Vector3.zero
 local dodgeGraceTimer = 0
 
+local function IsFromPlayer(obj)
+    -- 1. Direct descendant of any player's character
+    for _, p in ipairs(Players:GetPlayers()) do
+        local pChar = p.Character
+        if pChar and obj:IsDescendantOf(pChar) then
+            return true
+        end
+    end
+
+    -- 2. Ancestor hierarchy checks for player ownership
+    local curr = obj
+    while curr and curr ~= workspace and curr ~= game do
+        local cVal = curr:FindFirstChild("creator") or curr:FindFirstChild("owner") or curr:FindFirstChild("player") or curr:FindFirstChild("userId")
+        if cVal then
+            if cVal:IsA("ObjectValue") then
+                local v = cVal.Value
+                if v and (v:IsA("Player") or (v:IsA("Model") and Players:GetPlayerFromCharacter(v))) then
+                    return true
+                end
+            elseif cVal:IsA("StringValue") and Players:FindFirstChild(cVal.Value) then
+                return true
+            elseif cVal:IsA("IntValue") or cVal:IsA("NumberValue") then
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p.UserId == cVal.Value then return true end
+                end
+            end
+        end
+
+        if curr:IsA("Model") and Players:FindFirstChild(curr.Name) then
+            return true
+        end
+
+        curr = curr.Parent
+    end
+
+    return false
+end
+
 local function GetSmartRedDodgeVector(playerPos)
-    local char = LocalPlayer.Character
     local bestDodgeDir = nil
     local minDistanceToExit = math.huge
 
     local function inspectPart(obj)
         if not obj:IsA("BasePart") then return end
-        if char and obj:IsDescendantOf(char) then return end
+        if IsFromPlayer(obj) then return end -- Strict: NEVER dodge player abilities or teammates!
 
         local name = obj.Name:lower()
-        local parentName = obj.Parent and obj.Parent.Name:lower() or ""
+        local parent = obj.Parent
+        local parentName = parent and parent.Name:lower() or ""
         local isDanger = false
 
-        if name == "precast" or name:find("indicator") or name:find("telegraph") or name:find("danger") then
+        -- 1. Universal indicator names (ALL colors: Red, Cyan, Ice, Purple, Yellow, Orange, Green)
+        if name == "precast" or name:find("indicator") or name:find("telegraph") or name:find("iceaoe") or name:find("danger") then
             isDanger = true
-        elseif parentName:find("spikes") or parentName:find("beam") or parentName:find("aoe") or parentName:find("flame") or parentName:find("laser") then
-            if name == "hitbox" or name == "part" or name == "precast" then
+        elseif parentName:find("spikes") or parentName:find("beam") or parentName:find("aoe") or parentName:find("flame") or parentName:find("laser") or parentName:find("shot") or parentName:find("projectile") then
+            if name == "hitbox" or name == "part" or name == "precast" or name:find("damage") or name:find("indicator") then
                 isDanger = true
             end
         end
 
-        if not isDanger and obj.Transparency < 0.95 and not obj.CanCollide then
-            local c = obj.Color
-            if (c.R > 0.70 and c.G < 0.38 and c.B < 0.38) or (c.R > 0.80 and c.G < 0.50 and c.B < 0.50) or (c.R > 0.50 and c.G < 0.20 and c.B > 0.50) then
+        -- 2. Dedicated enemy projectile / hazard container check
+        if not isDanger then
+            if obj:IsDescendantOf(workspace:FindFirstChild("enemyProjectiles") or game) or
+               obj:IsDescendantOf(workspace:FindFirstChild("flameParts") or game) or
+               obj:IsDescendantOf(workspace:FindFirstChild("mageBossLaserSpawns") or game) then
                 isDanger = true
+            end
+        end
+
+        -- 3. Visual precast in enemy/boss models or dungeon rooms (any color: Red, Ice Blue, Void Purple, Poison Green, Electric Yellow)
+        if not isDanger and obj.Transparency < 0.98 and not obj.CanCollide then
+            local isUnderEnemyOrDungeon = false
+            if (workspace:FindFirstChild("dungeon") and obj:IsDescendantOf(workspace.dungeon)) or
+               (workspace:FindFirstChild("enemies") and obj:IsDescendantOf(workspace.enemies)) or
+               (workspace:FindFirstChild("boss") and obj:IsDescendantOf(workspace.boss)) then
+                isUnderEnemyOrDungeon = true
+            end
+
+            if isUnderEnemyOrDungeon then
+                if name == "precast" or name == "part" or name == "hitbox" or name:find("aoe") or name:find("circle") or name:find("line") or name:find("indicator") then
+                    isDanger = true
+                else
+                    -- Any distinct colored warning zone from an enemy
+                    local c = obj.Color
+                    -- Red/Orange/Pink OR Ice Blue/Cyan OR Purple/Magenta OR Yellow/Gold OR Poison Green
+                    if (c.R > 0.50) or (c.B > 0.45 and c.G > 0.40) or (c.R > 0.45 and c.B > 0.45) or (c.G > 0.55) then
+                        isDanger = true
+                    end
+                end
             end
         end
 
@@ -913,21 +980,36 @@ local function GetSmartRedDodgeVector(playerPos)
         end
     end
 
-    for _, fName in ipairs({"flameParts", "vfxPool", "abilities", "mageBossLaserSpawns"}) do
+    -- Scan enemy attack folders
+    for _, fName in ipairs({"enemyProjectiles", "flameParts", "vfxPool", "mageBossLaserSpawns", "abilities"}) do
         local f = workspace:FindFirstChild(fName)
         if f then
             for _, o in ipairs(f:GetDescendants()) do inspectPart(o) end
         end
     end
 
+    -- Scan dungeon rooms & enemies
+    local dungeon = workspace:FindFirstChild("dungeon")
+    if dungeon then
+        for _, o in ipairs(dungeon:GetDescendants()) do
+            if o:IsA("BasePart") then inspectPart(o) end
+        end
+    end
+
+    local enemies = workspace:FindFirstChild("enemies") or workspace:FindFirstChild("boss")
+    if enemies then
+        for _, o in ipairs(enemies:GetDescendants()) do
+            if o:IsA("BasePart") then inspectPart(o) end
+        end
+    end
+
+    -- Scan workspace direct hazards
     for _, o in ipairs(workspace:GetChildren()) do
-        if o:IsA("BasePart") or o:IsA("Model") then
-            if o:IsA("BasePart") then
-                inspectPart(o)
-            else
-                for _, sub in ipairs(o:GetChildren()) do
-                    if sub:IsA("BasePart") then inspectPart(sub) end
-                end
+        if o:IsA("BasePart") then
+            inspectPart(o)
+        elseif o:IsA("Model") and not Players:GetPlayerFromCharacter(o) then
+            for _, sub in ipairs(o:GetChildren()) do
+                if sub:IsA("BasePart") then inspectPart(sub) end
             end
         end
     end
@@ -1493,113 +1575,6 @@ createToggle(PageFarm, "🔥 Auto Skill Smart", Config.AutoSkillSmart, function(
 createToggle(PageFarm, "⚡ Spam Skills", Config.SpamSkill, function(v) Config.SpamSkill = v end)
 createToggle(PageFarm, "👁️ Mob ESP", Config.MobESP, function(v) Config.MobESP = v end)
 createToggle(PageFarm, "▶️ Auto Start & Replay", Config.AutoStart, function(v) Config.AutoStart = v Config.AutoReplay = v end)
-createToggle(PageFarm, "👥 Auto Start (Server Full)", Config.AutoStartWhenFull, function(v) Config.AutoStartWhenFull = v end)
-
-local TargetCard = createCard(PageFarm, 40)
-local TargetTitle = Instance.new("TextLabel")
-TargetTitle.Size = UDim2.new(0.48, 0, 1, 0)
-TargetTitle.Position = UDim2.new(0, 12, 0, 0)
-TargetTitle.BackgroundTransparency = 1
-TargetTitle.Text = "Target Players to Start:"
-TargetTitle.TextColor3 = Theme.TextTitle
-TargetTitle.TextSize = 11
-TargetTitle.Font = Enum.Font.GothamBold
-TargetTitle.TextXAlignment = Enum.TextXAlignment.Left
-TargetTitle.Parent = TargetCard
-
-local FarmStepContainer = Instance.new("Frame")
-FarmStepContainer.Size = UDim2.new(0.52, -16, 0, 28)
-FarmStepContainer.Position = UDim2.new(0.48, 4, 0.5, -14)
-FarmStepContainer.BackgroundTransparency = 1
-FarmStepContainer.Parent = TargetCard
-
-local FarmMinusBtn = Instance.new("TextButton")
-FarmMinusBtn.Size = UDim2.new(0, 26, 1, 0)
-FarmMinusBtn.Position = UDim2.new(0, 0, 0, 0)
-FarmMinusBtn.BackgroundColor3 = Theme.CardInner
-FarmMinusBtn.Text = "—"
-FarmMinusBtn.TextColor3 = Theme.Primary
-FarmMinusBtn.TextSize = 13
-FarmMinusBtn.Font = Enum.Font.GothamBold
-FarmMinusBtn.BorderSizePixel = 0
-FarmMinusBtn.Parent = FarmStepContainer
-
-local FmbCorner = Instance.new("UICorner")
-FmbCorner.CornerRadius = UDim.new(0, 6)
-FmbCorner.Parent = FarmMinusBtn
-
-local TargetInputFarm = Instance.new("TextBox")
-TargetInputFarm.Size = UDim2.new(1, -58, 1, 0)
-TargetInputFarm.Position = UDim2.new(0, 29, 0, 0)
-TargetInputFarm.BackgroundColor3 = Color3.fromRGB(22, 16, 12)
-TargetInputFarm.Text = tostring(Config.TargetPlayerCount)
-TargetInputFarm.TextColor3 = Theme.Primary
-TargetInputFarm.TextSize = 11
-TargetInputFarm.Font = Enum.Font.GothamBold
-TargetInputFarm.ClearTextOnFocus = false
-TargetInputFarm.Active = true
-TargetInputFarm.Selectable = true
-TargetInputFarm.BorderSizePixel = 0
-TargetInputFarm.Parent = FarmStepContainer
-
-local TifCorner = Instance.new("UICorner")
-TifCorner.CornerRadius = UDim.new(0, 6)
-TifCorner.Parent = TargetInputFarm
-
-local FarmPlusBtn = Instance.new("TextButton")
-FarmPlusBtn.Size = UDim2.new(0, 26, 1, 0)
-FarmPlusBtn.Position = UDim2.new(1, -26, 0, 0)
-FarmPlusBtn.BackgroundColor3 = Theme.CardInner
-FarmPlusBtn.Text = "+"
-FarmPlusBtn.TextColor3 = Theme.Primary
-FarmPlusBtn.TextSize = 14
-FarmPlusBtn.Font = Enum.Font.GothamBold
-FarmPlusBtn.BorderSizePixel = 0
-FarmPlusBtn.Parent = FarmStepContainer
-
-local FpbCorner = Instance.new("UICorner")
-FpbCorner.CornerRadius = UDim.new(0, 6)
-FpbCorner.Parent = FarmPlusBtn
-
-local function SyncTargetPlayerCount(newVal)
-    newVal = tonumber(newVal)
-    if newVal and newVal >= 1 then
-        Config.TargetPlayerCount = math.floor(newVal)
-        TargetInputFarm.Text = tostring(Config.TargetPlayerCount)
-        pcall(function()
-            if TargetCountInput and TargetCountInput.Text ~= tostring(Config.TargetPlayerCount) then
-                TargetCountInput.Text = tostring(Config.TargetPlayerCount)
-            end
-        end)
-    else
-        TargetInputFarm.Text = tostring(Config.TargetPlayerCount)
-    end
-end
-
-TargetInputFarm:GetPropertyChangedSignal("Text"):Connect(function()
-    local val = tonumber(TargetInputFarm.Text)
-    if val and val >= 1 then
-        Config.TargetPlayerCount = math.floor(val)
-        pcall(function()
-            if TargetCountInput and TargetCountInput.Text ~= tostring(Config.TargetPlayerCount) then
-                TargetCountInput.Text = tostring(Config.TargetPlayerCount)
-            end
-        end)
-    end
-end)
-
-TargetInputFarm.FocusLost:Connect(function()
-    SyncTargetPlayerCount(TargetInputFarm.Text)
-end)
-
-FarmMinusBtn.MouseButton1Click:Connect(function()
-    SyncTargetPlayerCount(Config.TargetPlayerCount - 1)
-end)
-
-FarmPlusBtn.MouseButton1Click:Connect(function()
-    SyncTargetPlayerCount(Config.TargetPlayerCount + 1)
-end)
-
 -- ==================== TAB 2: EQUIPMENT & STATS ==================== --
 local BuildCard = createCard(PageEquip, 116)
 local BuildTitle = Instance.new("TextLabel")
